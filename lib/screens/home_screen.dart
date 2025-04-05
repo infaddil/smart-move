@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:smart_move/screens/live_crowd_screen.dart'; // adjust path if needed
+import 'package:smart_move/screens/live_crowd_screen.dart';
+import 'package:smart_move/screens/alt_routes_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   @override
@@ -30,7 +31,10 @@ class HomeScreen extends StatelessWidget {
                 );
               }),
               _iconButton('Alt routes', Icons.alt_route, () {
-                // TODO: Navigate to alt routes screen
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => AltRoutesScreen()),
+                );
               }),
               _iconButton('My trips', Icons.receipt_long, () {
                 // TODO: Navigate to my trips screen

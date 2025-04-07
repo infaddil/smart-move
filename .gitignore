@@ -33,7 +33,7 @@ migrate_working_dir/
 .pub/
 /build/
 
-
+/android/java_pid15660.hprof
 # Symbolication related
 app.*.symbols
 

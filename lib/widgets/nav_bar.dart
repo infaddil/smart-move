@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:smart_move/screens/live_crowd_screen.dart';
 
 class NavBar extends StatelessWidget {
   final int currentIndex;

@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
-import 'screens/home_screen.dart';
-import 'screens/alt_routes_screen.dart';
-import 'screens/profile_screen.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:smart_move/screens/home_screen.dart';
+import 'package:smart_move/screens/alt_routes_screen.dart';
+import 'package:smart_move/screens/profile_screen.dart';
+import 'firebase_options.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform, // ⬅️ Pass correct config
+  );
   runApp(NoCramApp());
 }
 
@@ -17,8 +23,8 @@ class _NoCramAppState extends State<NoCramApp> {
 
   final List<Widget> _screens = [
     HomeScreen(),
-    //AltRoutesScreen(),
-    //ProfileScreen(),
+    AltRoutesScreen(),
+    DriverProfileScreen(),
   ];
 
   void _onItemTapped(int index) {

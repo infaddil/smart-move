@@ -1,18 +1,1 @@
-{
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "default",
-      "ignore": [
-        "node_modules",
-        ".git",
-        "firebase-debug.log",
-        "firebase-debug.*.log",
-        "*.local"
-      ],
-      "predeploy": [
-        "npm --prefix \"$RESOURCE_DIR\" run build"
-      ]
-    }
-  ]
-}
+{"functions":[{"source":"functions","codebase":"default","ignore":["node_modules",".git","firebase-debug.log","firebase-debug.*.log","*.local"],"predeploy":["npm --prefix \"$RESOURCE_DIR\" run build"]}],"flutter":{"platforms":{"android":{"default":{"projectId":"smart-move-2e56d","appId":"1:741867104589:android:d4267f0f6923edb5d56f04","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"smart-move-2e56d","configurations":{"android":"1:741867104589:android:d4267f0f6923edb5d56f04","ios":"1:741867104589:ios:9e9a996dd3dc5cc2d56f04","web":"1:741867104589:web:4f1a7a72895f1c61d56f04","windows":"1:741867104589:web:b828340b12a40615d56f04"}}}}}}

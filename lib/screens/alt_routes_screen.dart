@@ -66,9 +66,9 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   }
 
   int _estimateETA(double distanceKm, {bool isWalking = false, bool isBike = false}) {
-    if (isWalking) return (distanceKm / 4.8 * 60).round(); // ~4.8 km/h
-    if (isBike) return (distanceKm / 15 * 60).round();      // ~15 km/h
-    return (distanceKm / 25 * 60).round();                 // ~25 km/h for bus/car
+    if (isWalking) return (distanceKm / 4.8 * 60).round();
+    if (isBike) return (distanceKm / 15 * 60).round();
+    return (distanceKm / 25 * 60).round();
   }
 
   @override

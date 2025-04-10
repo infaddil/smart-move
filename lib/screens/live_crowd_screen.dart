@@ -1,8 +1,10 @@
+import 'dart:convert'; // Needed for jsonEncode
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 
 class LiveCrowdScreen extends StatefulWidget {
   @override
@@ -15,11 +17,11 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   List<Map<String, dynamic>> _busStops = [];
   List<Map<String, dynamic>> _sortedStops = [];
 
-  // Chat-related state
+  // Chat-related state for AI assistant
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
-  // For storing the "last approach" results
+  // For storing the "last approach" candidates (if needed)
   List<Map<String, dynamic>> _lastCandidates = [];
   int _lastIndex = 0;
   String _lastApproach = ""; // e.g. "nearest", "lowest", or "fastest"
@@ -53,146 +55,107 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     final random = Random();
     final snapshot =
     await FirebaseFirestore.instance.collection('busStops').get();
-
     final stops = snapshot.docs.map((doc) {
       final data = doc.data();
       final GeoPoint geo = data['location'];
       return {
         'name': data['name'],
         'location': LatLng(geo.latitude, geo.longitude),
-        // Simulated live crowd count
-        'crowd': random.nextInt(50) + 5,  // 5..54
-        'eta': random.nextInt(60) + 1,    // 1..60
+        // Simulated live crowd count between 5 and 54
+        'crowd': random.nextInt(50) + 5,
+        'eta': random.nextInt(60) + 1,
       };
     }).toList();
-
     setState(() {
       _busStops = stops;
-      _sortedStops = List.from(stops)..sort((a, b) => b['crowd'].compareTo(a['crowd']));
+      _sortedStops = List.from(stops)
+        ..sort((a, b) => b['crowd'].compareTo(a['crowd']));
     });
   }
 
-  // --------------------- GET CANDIDATES BY APPROACH ------------------------ //
-  // We filter to within 2km of user location, then sort based on approach type
-  List<Map<String, dynamic>> _filterCandidates(String approach) {
-    if (_currentLocation == null || _busStops.isEmpty) return [];
+  // --------------------- VERTEX AI INTEGRATION ----------------------------- //
+  // Calls a pre-trained Vertex AI model endpoint to get a suggestion.
+  Future<String> _callVertexAIPrediction(String query) async {
+    // Replace these with your actual project details.
+    final String project = "YOUR_PROJECT_ID";
+    final String region = "YOUR_REGION"; // e.g., "us-central1"
+    final String endpointId = "YOUR_ENDPOINT_ID";
 
-    // Filter to stops within 2km
-    final filtered = _busStops.where((stop) {
-      double distance = Geolocator.distanceBetween(
-        _currentLocation!.latitude,
-        _currentLocation!.longitude,
-        stop['location'].latitude,
-        stop['location'].longitude,
-      );
-      return distance < 2000; // 2km threshold
-    }).toList();
+    // Construct the Vertex AI REST API URL:
+    final String url =
+        "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/endpoints/$endpointId:predict";
 
-    // Sort differently depending on approach
-    if (approach == "nearest") {
-      filtered.sort((a, b) {
-        final distA = Geolocator.distanceBetween(
-            _currentLocation!.latitude,
-            _currentLocation!.longitude,
-            a['location'].latitude,
-            a['location'].longitude);
-        final distB = Geolocator.distanceBetween(
-            _currentLocation!.latitude,
-            _currentLocation!.longitude,
-            b['location'].latitude,
-            b['location'].longitude);
-        return distA.compareTo(distB);
-      });
-    } else if (approach == "lowest") {
-      filtered.sort((a, b) => a['crowd'].compareTo(b['crowd']));
-    } else if (approach == "fastest") {
-      filtered.sort((a, b) => a['eta'].compareTo(b['eta']));
-    }
+    // Construct payload – sending query, bus stops data, and user location.
+    final Map<String, dynamic> payload = {
+      "instances": [
+        {
+          "query": query,
+          "busStops": _busStops.map((stop) {
+            final LatLng loc = stop['location'] as LatLng;
+            return {
+              "name": stop['name'],
+              "crowd": stop['crowd'],
+              "eta": stop['eta'],
+              "lat": loc.latitude,
+              "lng": loc.longitude,
+            };
+          }).toList(),
+          "userLocation": _currentLocation != null
+              ? {"lat": _currentLocation!.latitude, "lng": _currentLocation!.longitude}
+              : null
+        }
+      ],
+      "parameters": {}
+    };
 
-    return filtered;
-  }
+    // In production, obtain your access token securely.
+    final headers = {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+    };
 
-  // --------------------- GENERATE SUGGESTION  ----------------------------- //
-  Future<String> _generateAccurateSuggestion(String query) async {
-    final normalized = query.toLowerCase();
+    final response = await http.post(Uri.parse(url),
+        headers: headers, body: jsonEncode(payload));
 
-    // 1. Check for "another suggestion" or "other" or "something else"
-    if (normalized.contains("other") ||
-        normalized.contains("another") ||
-        normalized.contains("something else")) {
-      // if we have leftover candidates from the last approach, show the NEXT one
-      if (_lastCandidates.isEmpty) {
-        return "No previous approach found. Try asking for nearest/lowest crowd/fastest first.";
-      }
-      _lastIndex++;
-      if (_lastIndex >= _lastCandidates.length) {
-        return "No more stops left in that list. Sorry!";
-      }
-      final nextStop = _lastCandidates[_lastIndex];
-      return "Next best option is ${nextStop['name']} with ${nextStop['crowd']} people waiting and ETA of ${nextStop['eta']} mins.";
-    }
-
-    // 2. Otherwise, parse the approach
-    bool wantNearest =
-        normalized.contains("nearest") || normalized.contains("closest");
-    bool wantLowest = normalized.contains("lowest crowd") ||
-        normalized.contains("least crowd") ||
-        normalized.contains("less crowd");
-    bool wantFastest = normalized.contains("fastest") ||
-        normalized.contains("quickest") ||
-        normalized.contains("shortest time");
-
-    // fallback approach if none matched
-    String approach = "nearest";
-    if (wantLowest) approach = "lowest";
-    if (wantFastest) approach = "fastest";
-    if (wantNearest) approach = "nearest";
-
-    // 3. Filter & sort candidates based on approach
-    final candidates = _filterCandidates(approach);
-
-    if (candidates.isEmpty) {
-      return "No bus stops are available within 2 km right now, or no data loaded.";
-    }
-
-    // store these for future "other suggestion" requests
-    _lastCandidates = candidates;
-    _lastApproach = approach;
-    _lastIndex = 0;
-
-    final top = candidates[_lastIndex];
-    // Return the first suggestion from the sorted list
-    if (approach == "nearest") {
-      return "The nearest bus stop is ${top['name']}, with ${top['crowd']} people waiting and an ETA of ${top['eta']} minutes.";
-    } else if (approach == "lowest") {
-      return "The bus stop with the lowest crowd is ${top['name']}, at ${top['crowd']} people and ${top['eta']} mins ETA.";
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> responseData = jsonDecode(response.body);
+      // Assumes the endpoint returns: {"predictions": [{"suggestion": "Your text"}]}
+      return responseData["predictions"][0]["suggestion"] ??
+          "No suggestion returned from AI.";
     } else {
-      return "The fastest arriving bus stop is ${top['name']}, with an ETA of ${top['eta']} mins and crowd of ${top['crowd']}.";
+      throw Exception(
+          "Vertex AI call failed with status ${response.statusCode}: ${response.body}");
     }
   }
 
-  // ------------------- WHEN THE USER SENDS A QUERY ------------------------ //
+  // --------------------- WHEN THE USER SENDS A QUERY ------------------------ //
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
     setState(() {
       _chatHistory.add({"sender": "user", "message": query});
       _chatController.clear();
     });
-    String aiResponse = await _generateAccurateSuggestion(query);
-    setState(() {
-      _chatHistory.add({"sender": "ai", "message": aiResponse});
-    });
+    try {
+      // Use Vertex AI for a suggestion.
+      String aiResponse = await _callVertexAIPrediction(query);
+      setState(() {
+        _chatHistory.add({"sender": "ai", "message": aiResponse});
+      });
+    } catch (error) {
+      setState(() {
+        _chatHistory.add({"sender": "ai", "message": "Error: ${error.toString()}"});
+      });
+    }
   }
 
-  // ------------------- BOTTOM SHEET CHAT UI ------------------------------- //
+  // ------------------- BOTTOM SHEET CHAT UI (with improved keyboard handling) ------------------------------- //
   void _showChatModal() {
     showModalBottomSheet(
       isScrollControlled: true,
       context: context,
       backgroundColor: Colors.white,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) {
         return Padding(
           padding: EdgeInsets.only(
@@ -232,8 +195,9 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                         final chat = _chatHistory[index];
                         final isUser = chat["sender"] == "user";
                         return Align(
-                          alignment:
-                          isUser ? Alignment.centerRight : Alignment.centerLeft,
+                          alignment: isUser
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
                           child: Container(
                             margin: EdgeInsets.symmetric(
                                 vertical: 4, horizontal: 8),
@@ -274,7 +238,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                         ),
                         SizedBox(width: 8),
                         ElevatedButton(
-                          onPressed: () => _sendUserQuery(_chatController.text),
+                          onPressed: () =>
+                              _sendUserQuery(_chatController.text),
                           style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.purple),
                           child: Icon(Icons.send, color: Colors.white),
@@ -291,7 +256,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     );
   }
 
-  // Displays each bus stop's crowd visually
+  // ------------------------ LIVE DATA VISUAL ----------------------------------- //
   Widget _buildLiveDataVisual() {
     return Container(
       height: 70,
@@ -320,7 +285,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                 ),
                 SizedBox(height: 4),
                 LinearProgressIndicator(
-                  value: crowd / 50.0, // assume max crowd ~50
+                  value: crowd / 50.0,
                   backgroundColor: Colors.grey[200],
                   color: Colors.purple,
                 ),
@@ -334,7 +299,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     );
   }
 
-  // ------------------------- MAIN UI -------------------------------------- //
+  // ------------------------ MAIN UI -------------------------------------- //
   @override
   Widget build(BuildContext context) {
     return Scaffold(

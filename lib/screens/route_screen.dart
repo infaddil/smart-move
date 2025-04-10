@@ -95,7 +95,7 @@ class _RouteScreenState extends State<RouteScreen> {
       return {
         'name': data['name'],
         'location': LatLng(geo.latitude, geo.longitude),
-        'crowd': random.nextInt(2) + 5, // between 5 and 54
+        'crowd': random.nextInt(8) + 5, // between 5 and 54
         'eta': random.nextInt(60) + 1,
       };
     }).toList();
@@ -253,7 +253,7 @@ class _RouteScreenState extends State<RouteScreen> {
                 child: Center(
                   child: _pickupStops.isNotEmpty
                       ? Text(
-                    "Current Stop: ${_pickupStops.first['name']} (Crowd: ${_pickupStops.first['crowd']})",
+                    "Next Stop: ${_pickupStops.first['name']} (Crowd: ${_pickupStops.first['crowd']})",
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,

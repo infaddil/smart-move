@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:math';
+import 'package:cloud_firestore/cloud_firestore.dart'; // 🔥 for Firestore + GeoPoint
 
 
 class LiveCrowdScreen extends StatefulWidget {
@@ -13,12 +14,13 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   late GoogleMapController _controller;
   LatLng? _currentLocation;
   List<Map<String, dynamic>> _busStops = [];
+  List<Map<String, dynamic>> _sortedStops = [];
 
   @override
   void initState() {
     super.initState();
     _getLocation();
-    _loadFakeBusStops();
+    _loadBusStopsFromFirestore();
   }
 
   Future<void> _getLocation() async {
@@ -53,125 +55,27 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     );
   }
 
-  void _loadFakeBusStops() {
+  void _loadBusStopsFromFirestore() async {
     final random = Random();
-    _busStops = [
-      {
-        'name': 'DK A',
-        'location': LatLng(5.358472063851898, 100.30358172014454),
+    final snapshot = await FirebaseFirestore.instance.collection('busStops').get();
+
+    final stops = snapshot.docs.map((doc) {
+      final data = doc.data();
+      final GeoPoint geo = data['location'];
+      return {
+        'name': data['name'],
+        'location': LatLng(geo.latitude, geo.longitude),
         'crowd': random.nextInt(50) + 5,
         'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Desasiswa Tekun',
-        'location': LatLng(5.356164243999046, 100.29137000150655),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Padang Kawad USM',
-        'location': LatLng(5.356575824397347, 100.29438698781404),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Aman Damai',
-        'location': LatLng(5.355016860781792, 100.29772995685882),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Informm',
-        'location': LatLng( 5.355756904620433, 100.30022534653023),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Stor Pusat Kimia',
-        'location': LatLng(5.356432270401126, 100.30096914945585),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'BHEPA',
-        'location': LatLng(5.35921073913782, 100.30250488384392),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'DKSK',
-        'location': LatLng(5.359404468217731, 100.30451729410511),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'SOLLAT',
-        'location': LatLng(5.357330653809769, 100.30720848569456),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'GSB',
-        'location': LatLng(5.356934272035779, 100.30757773835158),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'HBP',
-        'location': LatLng(5.355040006814353, 100.30626811136635),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'PHS',
-        'location': LatLng(5.354941724482438, 100.30370271691852),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Eureka',
-        'location': LatLng(5.354770901747802, 100.30414474646078),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Harapan',
-        'location': LatLng(5.355241844849605, 100.29968061136645),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Indah Kembara',
-        'location': LatLng(5.355791916604481, 100.29544875369481),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Jabatan Keselamatan',
-        'location': LatLng(5.355676144659425, 100.29790864945589),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'Nasi Kandar Subaidah USM',
-        'location': LatLng(5.35689190629461, 100.30459688993344),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'M07 USM',
-        'location': LatLng(5.356677224370704, 100.28989391453047),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-      {
-        'name': 'M01 USM',
-        'location': LatLng(5.356141098470615, 100.28953752062004),
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
-      },
-    ];
+      };
+    }).toList();
+
+    setState(() {
+      _busStops = stops;
+      _sortedStops = List.from(stops)..sort((a, b) => b['crowd'].compareTo(a['crowd']));
+    });
   }
+
 
   String _getLeastCrowdedSuggestion() {
     final leastCrowded = _busStops.reduce((a, b) => a['crowd'] < b['crowd'] ? a : b);

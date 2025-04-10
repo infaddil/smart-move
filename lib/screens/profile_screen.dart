@@ -12,29 +12,18 @@ class DriverProfileScreen extends StatefulWidget {
 class _DriverProfileScreenState extends State<DriverProfileScreen> {
   User? _user;
   String? _busNumber;
-  final List<String> _busPlates = ['PEN 1234', 'USM 5581', 'BUS 0198', 'KTM 9201', 'JPN 7113'];
+  // 5 example Malaysian bus plate numbers – adjust as needed.
+  final List<String> _busPlates = ['WLY 1234', 'JHR 5581', 'PRK 0198', 'SEL 9201', 'KDH 7113'];
   final TextEditingController _nameController = TextEditingController();
 
-  Future<void> _signInWithGoogle() async {
-    final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-    if (googleUser == null) {
-      print('Login cancelled');
-      return;
-    }
-
-    final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-    final credential = GoogleAuthProvider.credential(
-      accessToken: googleAuth.accessToken,
-      idToken: googleAuth.idToken,
-    );
-
-    final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
-    final user = userCredential.user;
-    final docRef = FirebaseFirestore.instance.collection('users').doc(user!.uid);
+  // This helper makes sure a bus number is assigned
+  Future<String> _ensureBusNumber(User user) async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
     final docSnapshot = await docRef.get();
-
     String busNumber;
-    if (!docSnapshot.exists) {
+    if (!docSnapshot.exists ||
+        docSnapshot.data()?['busNumber'] == null ||
+        (docSnapshot.data()?['busNumber'] as String).isEmpty) {
       busNumber = (_busPlates..shuffle()).first;
       await docRef.set({
         'name': user.displayName ?? 'No Name',
@@ -42,10 +31,32 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
         'photoUrl': user.photoURL ?? '',
         'busNumber': busNumber,
         'timestamp': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
+      print("Assigned new bus number: $busNumber");
     } else {
-      busNumber = docSnapshot.data()?['busNumber'] ?? (_busPlates..shuffle()).first;
+      busNumber = docSnapshot.data()?['busNumber'] as String;
+      print("Retrieved bus number from Firestore: $busNumber");
     }
+    return busNumber;
+  }
+
+  Future<void> _signInWithGoogle() async {
+    final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+    if (googleUser == null) {
+      print('Login cancelled');
+      return;
+    }
+    final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+    final credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth.accessToken,
+      idToken: googleAuth.idToken,
+    );
+    final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+    final user = userCredential.user;
+    if (user == null) return;
+
+    // Ensure bus number is assigned at sign in
+    String busNumber = await _ensureBusNumber(user);
 
     await _saveBusNumber(user.uid, busNumber);
     await _saveName(user.uid, user.displayName ?? '');
@@ -66,7 +77,7 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
           'busNumber': _busNumber ?? '',
         }, SetOptions(merge: true));
         await _saveName(_user!.uid, _nameController.text);
-        print("Firestore updated with name, email, and busNumber.");
+        print("Firestore updated with new name: ${_nameController.text}");
       } catch (e) {
         print("Error updating Firestore: $e");
       }
@@ -102,13 +113,21 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
   void _checkSignedInUser() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
+      String busNumber = '';
       final savedBus = await _loadBusNumber(user.uid);
+      if (savedBus == null || savedBus.isEmpty) {
+        // If local storage is empty, fetch (or assign) from Firestore
+        busNumber = await _ensureBusNumber(user);
+        await _saveBusNumber(user.uid, busNumber);
+      } else {
+        busNumber = savedBus;
+      }
       final savedName = await _loadName(user.uid);
 
       setState(() {
         _user = user;
         _nameController.text = savedName ?? user.displayName ?? '';
-        _busNumber = savedBus;
+        _busNumber = busNumber;
       });
     }
   }
@@ -195,7 +214,7 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
           ),
           SizedBox(height: 16),
           _infoTile(Icons.email, _user?.email ?? 'No email'),
-          _infoTile(Icons.directions_bus, 'Bus Number: $_busNumber'),
+          _infoTile(Icons.directions_bus, 'Bus Number: ${_busNumber ?? "Not assigned"}'),
         ],
       ),
     );

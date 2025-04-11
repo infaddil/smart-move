@@ -1,4 +1,4 @@
-import 'dart:convert'; // Needed for jsonEncode
+import 'dart:convert'; // For jsonEncode
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -21,10 +21,9 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
-  // For storing the "last approach" candidates (if needed)
-  List<Map<String, dynamic>> _lastCandidates = [];
+  // For storing the last list of suggestions returned from Vertex AI
+  List<String> _lastCandidates = [];
   int _lastIndex = 0;
-  String _lastApproach = ""; // e.g. "nearest", "lowest", or "fastest"
 
   @override
   void initState() {
@@ -34,7 +33,6 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   }
 
   // ------------------------ LOCATION / DATA LOADING ------------------------ //
-
   Future<void> _getLocation() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return;
@@ -73,62 +71,49 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     });
   }
 
-  // --------------------- VERTEX AI INTEGRATION ----------------------------- //
-  // Calls a pre-trained Vertex AI model endpoint to get a suggestion.
+  // --------------------- VERTEX AI CALL (Returning Multiple Candidates) ----------------------------- //
   Future<String> _callVertexAIPrediction(String query) async {
-    // Replace these with your actual project details.
-    final String project = "YOUR_PROJECT_ID";
-    final String region = "YOUR_REGION"; // e.g., "us-central1"
-    final String endpointId = "YOUR_ENDPOINT_ID";
-
-    // Construct the Vertex AI REST API URL:
+    const String project = "smart-move-455808";
+    const String region = "us-central1"; // try us-central1 if needed
     final String url =
-        "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/endpoints/$endpointId:predict";
+        "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/chat-bison:predict";
+    const String accessToken = "YOUR_ACCESS_TOKEN";  // update with current token
 
-    // Construct payload – sending query, bus stops data, and user location.
+    String prompt = "Here are the current bus stops:\n";
+    for (var stop in _busStops) {
+      final LatLng loc = stop['location'] as LatLng;
+      prompt += "${stop['name']}: ${stop['crowd']} ppl, ETA ${stop['eta']} min.\n";
+    }
+    prompt += "\nMy current location is: ${_currentLocation?.latitude.toStringAsFixed(4)}, ${_currentLocation?.longitude.toStringAsFixed(4)}.\n";
+    prompt += "Which bus stop should I choose to avoid crowd and get there quickly?";
+
     final Map<String, dynamic> payload = {
       "instances": [
-        {
-          "query": query,
-          "busStops": _busStops.map((stop) {
-            final LatLng loc = stop['location'] as LatLng;
-            return {
-              "name": stop['name'],
-              "crowd": stop['crowd'],
-              "eta": stop['eta'],
-              "lat": loc.latitude,
-              "lng": loc.longitude,
-            };
-          }).toList(),
-          "userLocation": _currentLocation != null
-              ? {"lat": _currentLocation!.latitude, "lng": _currentLocation!.longitude}
-              : null
-        }
+        {"messages": [{"author": "user", "content": prompt}]}
       ],
-      "parameters": {}
+      "parameters": {"temperature": 0.7, "maxOutputTokens": 256, "topP": 0.8, "topK": 40}
     };
 
-    // In production, obtain your access token securely.
+    print("Calling Vertex AI with payload: ${jsonEncode(payload)}");
+
     final headers = {
       "Content-Type": "application/json",
-      "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+      "Authorization": "Bearer $accessToken",
     };
 
-    final response = await http.post(Uri.parse(url),
-        headers: headers, body: jsonEncode(payload));
+    final response = await http.post(Uri.parse(url), headers: headers, body: jsonEncode(payload));
+    print("HTTP status: ${response.statusCode}");
+    print("Response body: ${response.body}");
 
     if (response.statusCode == 200) {
       final Map<String, dynamic> responseData = jsonDecode(response.body);
-      // Assumes the endpoint returns: {"predictions": [{"suggestion": "Your text"}]}
-      return responseData["predictions"][0]["suggestion"] ??
+      return responseData["predictions"][0]["candidates"][0]["content"] ??
           "No suggestion returned from AI.";
     } else {
-      throw Exception(
-          "Vertex AI call failed with status ${response.statusCode}: ${response.body}");
+      throw Exception("Vertex AI call failed: ${response.statusCode} ${response.body}");
     }
   }
 
-  // --------------------- WHEN THE USER SENDS A QUERY ------------------------ //
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
     setState(() {
@@ -136,17 +121,20 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       _chatController.clear();
     });
     try {
-      // Use Vertex AI for a suggestion.
+      print("Sending user query: $query");
       String aiResponse = await _callVertexAIPrediction(query);
+      print("Received AI response: $aiResponse");
       setState(() {
         _chatHistory.add({"sender": "ai", "message": aiResponse});
       });
     } catch (error) {
+      print("Error: $error");
       setState(() {
-        _chatHistory.add({"sender": "ai", "message": "Error: ${error.toString()}"});
+        _chatHistory.add({"sender": "ai", "message": "Error: $error"});
       });
     }
   }
+  // --------------------- WHEN THE USER SENDS A QUERY ------------------------ //
 
   // ------------------- BOTTOM SHEET CHAT UI (with improved keyboard handling) ------------------------------- //
   void _showChatModal() {
@@ -154,8 +142,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       isScrollControlled: true,
       context: context,
       backgroundColor: Colors.white,
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) {
         return Padding(
           padding: EdgeInsets.only(
@@ -181,10 +168,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                   SizedBox(height: 12),
                   Text(
                     "Chat with Gemini",
-                    style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.purple),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple),
                   ),
                   SizedBox(height: 12),
                   Expanded(
@@ -195,14 +179,10 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                         final chat = _chatHistory[index];
                         final isUser = chat["sender"] == "user";
                         return Align(
-                          alignment: isUser
-                              ? Alignment.centerRight
-                              : Alignment.centerLeft,
+                          alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                           child: Container(
-                            margin: EdgeInsets.symmetric(
-                                vertical: 4, horizontal: 8),
-                            padding: EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 8),
+                            margin: EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                             decoration: BoxDecoration(
                               color: isUser ? Colors.purple[200] : Colors.grey[300],
                               borderRadius: BorderRadius.circular(8),
@@ -221,8 +201,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                   SizedBox(height: 10),
                   _buildLiveDataVisual(),
                   Padding(
-                    padding: EdgeInsets.only(
-                        bottom: 10, top: 8, left: 8, right: 8),
+                    padding: EdgeInsets.only(bottom: 10, top: 8, left: 8, right: 8),
                     child: Row(
                       children: [
                         Expanded(
@@ -230,18 +209,15 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                             controller: _chatController,
                             decoration: InputDecoration(
                               hintText: "Ask a question...",
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8)),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                             ),
                             onSubmitted: _sendUserQuery,
                           ),
                         ),
                         SizedBox(width: 8),
                         ElevatedButton(
-                          onPressed: () =>
-                              _sendUserQuery(_chatController.text),
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.purple),
+                          onPressed: () => _sendUserQuery(_chatController.text),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
                           child: Icon(Icons.send, color: Colors.white),
                         )
                       ],
@@ -285,7 +261,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                 ),
                 SizedBox(height: 4),
                 LinearProgressIndicator(
-                  value: crowd / 50.0,
+                  value: crowd / 50.0, // assume max crowd ~50
                   backgroundColor: Colors.grey[200],
                   color: Colors.purple,
                 ),
@@ -299,7 +275,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     );
   }
 
-  // ------------------------ MAIN UI -------------------------------------- //
+  // ------------------------ MAIN UI ----------------------------------- //
   @override
   Widget build(BuildContext context) {
     return Scaffold(

@@ -28,8 +28,8 @@ class BusRouteService {
         'name': d['name'],
         'location': LatLng(geo.latitude, geo.longitude),
         // simulate or replace with real crowd:
-        'crowd': _rnd.nextInt(50)+5,
-        'eta'  : _rnd.nextInt(60)+1,
+        'crowd': _rnd.nextInt(15)+5,
+        'eta'  : _rnd.nextInt(30)+1,
       };
     }).toList();
   }

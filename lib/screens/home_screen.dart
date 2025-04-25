@@ -123,12 +123,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 SizedBox(height: 20),
                 Container(
                   width: double.infinity,
-                  height: MediaQuery.of(context).size.height * 0.75,
+                  height: MediaQuery.of(context).size.height * 0.85,
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  // ← ADD THIS to give inner horizontal (and vertical) breathing room:
                   padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
 
                   child: Column(

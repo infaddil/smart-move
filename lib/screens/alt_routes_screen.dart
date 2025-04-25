@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:math';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:smart_move/widgets/nav_bar.dart';
 
 class AltRoutesScreen extends StatefulWidget {
   @override
@@ -9,10 +12,10 @@ class AltRoutesScreen extends StatefulWidget {
 }
 
 class _AltRoutesScreenState extends State<AltRoutesScreen> {
-  // Route Preference: if true → "Least walking", if false → "Shortest time"
+  int _selectedIndex = 0;
+  User? _currentUser;
+  String? _userRole;
   bool leastWalking = true;
-
-  // Bus Stop Preferences
   bool nearestStop = false;
   bool lowestHeadcount = false;
   bool bicycle = false;
@@ -47,6 +50,35 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   void initState() {
     super.initState();
     _getLocation();
+    _currentUser = FirebaseAuth.instance.currentUser;
+    if (_currentUser != null) _fetchUserRole();
+
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      setState(() {
+        _currentUser = user;
+        if (user != null) {
+          _fetchUserRole();
+        } else {
+          _userRole = null;
+        }
+      });
+    });
+  }
+
+  Future<void> _fetchUserRole() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    setState(() {
+      _userRole = doc.data()?['role'];
+    });
+  }
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
   }
 
   Future<void> _getLocation() async {
@@ -86,6 +118,10 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
           _preferencesButton(),
           Expanded(child: _suggestedRoutesList()),
         ],
+      ),
+      bottomNavigationBar: BottomNavBar(
+        selectedIndex: _selectedIndex,
+        onItemTapped: _onItemTapped,
       ),
     );
   }

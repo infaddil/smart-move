@@ -4,6 +4,8 @@ import 'dart:async';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:smart_move/widgets/nav_bar.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class RouteScreen extends StatefulWidget {
   @override
@@ -12,8 +14,10 @@ class RouteScreen extends StatefulWidget {
 
 class _RouteScreenState extends State<RouteScreen> {
   late GoogleMapController _mapController;
+  int _selectedIndex = 0;
+  User? _currentUser;
+  String? _userRole;
 
-  // Only the stops with crowd < 60 get stored here:
   List<Map<String, dynamic>> _pickupStops = [];
   String? _currentPickupMessage;
 
@@ -24,18 +28,45 @@ class _RouteScreenState extends State<RouteScreen> {
   StreamSubscription<Position>? _positionStreamSubscription;
 
   @override
-  void initState() {
-    super.initState();
-    _loadBusStopsFromFirestore();
-  }
-
-  @override
   void dispose() {
     _positionStreamSubscription?.cancel();
     super.dispose();
   }
 
-  // Check and request location permissions.
+  @override
+  void initState() {
+    super.initState();
+    _loadBusStopsFromFirestore();
+    _currentUser = FirebaseAuth.instance.currentUser;
+    if (_currentUser != null) _fetchUserRole();
+
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      setState(() {
+        _currentUser = user;
+        if (user != null) {
+          _fetchUserRole();
+        } else {
+          _userRole = null;
+        }
+      });
+    });
+  }
+
+  Future<void> _fetchUserRole() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    setState(() {
+      _userRole = doc.data()?['role'];
+    });
+  }
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+  }
   Future<void> _checkLocationPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -304,6 +335,10 @@ class _RouteScreenState extends State<RouteScreen> {
         Text(_pickupStops.isNotEmpty ? "Next Stop" : "Done"),
         icon: Icon(Icons.directions_bus),
         backgroundColor: Colors.purple,
+      ),
+      bottomNavigationBar: BottomNavBar(
+        selectedIndex: _selectedIndex,
+        onItemTapped: _onItemTapped,
       ),
     );
   }

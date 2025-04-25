@@ -96,6 +96,13 @@ class _BottomNavBarState extends State<BottomNavBar> {
                 builder: (context) => AltRoutesScreen(),
               ),
             );
+          } else if (role == 'driver') {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => RouteScreen(),
+              ),
+            );
           }
         }else if (index == 3) {
           if (role != 'driver') {

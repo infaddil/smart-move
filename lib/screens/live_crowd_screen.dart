@@ -5,6 +5,8 @@ import 'package:geolocator/geolocator.dart';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
+import 'package:smart_move/widgets/nav_bar.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
   @override
@@ -12,16 +14,17 @@ class LiveCrowdScreen extends StatefulWidget {
 }
 
 class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
+  int _selectedIndex = 0;
+  User? _currentUser;
+  String? _userRole;
   late GoogleMapController _controller;
   LatLng? _currentLocation;
   List<Map<String, dynamic>> _busStops = [];
   List<Map<String, dynamic>> _sortedStops = [];
 
-  // Chat-related state for AI assistant
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
-  // For storing the last list of suggestions returned from Vertex AI
   List<String> _lastCandidates = [];
   int _lastIndex = 0;
 
@@ -30,6 +33,34 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     super.initState();
     _getLocation();
     _loadBusStopsFromFirestore();
+    _currentUser = FirebaseAuth.instance.currentUser;
+    if (_currentUser != null) _fetchUserRole();
+
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      setState(() {
+        _currentUser = user;
+        if (user != null) {
+          _fetchUserRole();
+        } else {
+          _userRole = null;
+        }
+      });
+    });
+  }
+  Future<void> _fetchUserRole() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    setState(() {
+      _userRole = doc.data()?['role'];
+    });
+  }
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
   }
 
   // ------------------------ LOCATION / DATA LOADING ------------------------ //
@@ -355,6 +386,10 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
             ),
           ),
         ],
+      ),
+      bottomNavigationBar: BottomNavBar(
+        selectedIndex: _selectedIndex,
+        onItemTapped: _onItemTapped,
       ),
     );
   }

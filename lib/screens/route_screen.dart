@@ -6,6 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:smart_move/screens/bus_route_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class RouteScreen extends StatefulWidget {
   @override
@@ -116,37 +118,19 @@ class _RouteScreenState extends State<RouteScreen> {
   }
 
   void _loadBusStopsFromFirestore() async {
-    final random = Random();
-    final snapshot =
-    await FirebaseFirestore.instance.collection('busStops').get();
+    // 1) grab the driver's routeType unconditionally
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    final busType = userDoc.data()!['routeType'] as String;
 
-    final allStops = snapshot.docs.map((doc) {
-      final data = doc.data();
-      final GeoPoint geo = data['location'];
-      return {
-        'name': data['name'],
-        'location': LatLng(geo.latitude, geo.longitude),
-        'crowd': random.nextInt(8) + 5, // between 5 and 54
-        'eta': random.nextInt(60) + 1,
-      };
-    }).toList();
-
-    // Sort by descending crowd
-    allStops.sort((a, b) => b['crowd'].compareTo(a['crowd']));
-
-    List<Map<String, dynamic>> finalPickupStops = [];
-    int accumulatedCrowd = 0;
-
-    for (var stop in allStops) {
-      final int crowd = stop['crowd'];
-      if (accumulatedCrowd + crowd <= 60) {
-        finalPickupStops.add(stop);
-        accumulatedCrowd += crowd;
-      }
-    }
+    // 2) compute pickups for exactly that routeType (A, B or C)
+    final assignments = await BusRouteService()
+        .getAssignments(busType, capacity: 60);
 
     setState(() {
-      _pickupStops = finalPickupStops;
+      _pickupStops = assignments['current']!;
     });
   }
 

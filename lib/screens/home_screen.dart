@@ -6,13 +6,18 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:smart_move/screens/bus_route_service.dart';
+
 
 class HomeScreen extends StatefulWidget {
+
+
   @override
   _HomeScreenState createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  String? _searchResultMessage;
   LatLng? _currentPosition;
   GoogleMapController? _mapController;
   int _selectedIndex = 0;
@@ -89,25 +94,30 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
                 ),
                 SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _iconButton('Live Crowd', Icons.wifi, () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => LiveCrowdScreen()),
-                      );
-                    }),
-                    _iconButton('Alt Routes', Icons.alt_route, () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => AltRoutesScreen()),
-                      );
-                    }),
-                    _iconButton('My Trips', Icons.receipt_long, () {
-                      // TODO: Navigate to My Trips screen
-                    }),
-                  ],
+                // BUS TRACKER BUTTON
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16.0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.purple[600],             // medium–dark purple
+                        padding: EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      icon: Icon(Icons.directions_bus, color: Colors.white),
+                      label: Text('Bus tracker',
+                          style: TextStyle(color: Colors.white, fontSize: 16)),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => BusTrackerScreen()),
+                        );
+                      },
+                    ),
+                  ),
                 ),
                 SizedBox(height: 20),
                 Container(
@@ -123,21 +133,89 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // your exact TextField block, unchanged:
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 20),
-                        child: TextField(
-                          decoration: InputDecoration(
-                            hintText: 'Search destination',
-                            prefixIcon: Icon(Icons.search),
-                            filled: true,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: BorderSide.none,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextField(
+                              decoration: InputDecoration(
+                                hintText: 'Search destination',
+                                prefixIcon: Icon(Icons.search),
+                                filled: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                              onSubmitted: (dest) async {
+                                // 0) Ensure we know the driver's routeType
+                                if (_userRole == null) {
+                                  setState(() {
+                                    _searchResultMessage =
+                                    'Still loading your route info… please try again in a moment.';
+                                  });
+                                  return;
+                                }
+                                final busType = _userRole!;  // "A", "B" or "C"
+
+                                // 1) Get the current + next segments
+                                final assigns =
+                                await BusRouteService().getAssignments(busType);
+                                final current = assigns['current']!;
+                                final next    = assigns['next']!;
+
+                                // 2) Look up the destination
+                                final inCurrent = current.firstWhere(
+                                      (s) => s['name'].toLowerCase() == dest.toLowerCase(),
+                                  orElse: () => {},
+                                );
+
+                                String msg;
+                                if (inCurrent.isNotEmpty) {
+                                  msg = 'Current bus $busType is going to $dest in '
+                                      '${inCurrent['eta']} min';
+                                } else {
+                                  final inNext = next.firstWhere(
+                                        (s) => s['name'].toLowerCase() == dest.toLowerCase(),
+                                    orElse: () => {},
+                                  );
+                                  if (inNext.isNotEmpty) {
+                                    msg = 'Wait for next bus $busType as current won’t pick you up. '
+                                        'ETA ${inNext['eta']} min';
+                                  } else {
+                                    msg = 'No $busType bus serving $dest right now.';
+                                  }
+                                }
+
+                                setState(() {
+                                  _searchResultMessage = msg;
+                                });
+                              },
                             ),
-                          ),
+
+                            // 3) Result card, sibling to the TextField
+                            if (_searchResultMessage != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8.0),
+                                child: Card(
+                                  color: Colors.purple[50],
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12.0),
+                                    child: Text(
+                                      _searchResultMessage!,
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
+
                       SizedBox(height: 12),
 
                       // your map container, unchanged:

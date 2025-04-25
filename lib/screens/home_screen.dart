@@ -7,6 +7,7 @@ import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
+import 'package:smart_move/screens/bus_tracker.dart';
 
 
 class HomeScreen extends StatefulWidget {

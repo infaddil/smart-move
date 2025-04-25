@@ -1,4 +1,4 @@
-import 'dart:convert'; // For jsonEncode
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -9,6 +9,9 @@ import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
+  final LatLng? initialLocation;
+  LiveCrowdScreen({this.initialLocation});
+
   @override
   _LiveCrowdScreenState createState() => _LiveCrowdScreenState();
 }
@@ -22,6 +25,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   List<Map<String, dynamic>> _busStops = [];
   List<Map<String, dynamic>> _sortedStops = [];
 
+
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
@@ -31,7 +35,13 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   @override
   void initState() {
     super.initState();
-    _getLocation();
+    if (widget.initialLocation != null) {
+      // use the passed‐in location
+      _currentLocation = widget.initialLocation;
+    } else {
+      // fallback to real GPS
+      _getLocation();
+    }
     _loadBusStopsFromFirestore();
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();

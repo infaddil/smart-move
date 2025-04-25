@@ -22,7 +22,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _initLocation();
+    _currentPosition = LatLng (5.354792742851638, 100.30181627359067);
+    // _initLocation(); (real later)
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
 
@@ -78,61 +79,68 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: Colors.purple[100],
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.all(4),
           child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Hello, Intan',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _iconButton('Live Crowd', Icons.wifi, () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => LiveCrowdScreen()),
-                    );
-                  }),
-                  _iconButton('Alt Routes', Icons.alt_route, () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => AltRoutesScreen()),
-                    );
-                  }),
-                  _iconButton('My Trips', Icons.receipt_long, () {
-                    // TODO: Navigate to My Trips screen
-                  }),
-                ],
-              ),
-              SizedBox(height: 16),
-              Container(
-                height: screenHeight * 0.75,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hello, Intan',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
+                SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _iconButton('Live Crowd', Icons.wifi, () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => LiveCrowdScreen()),
+                      );
+                    }),
+                    _iconButton('Alt Routes', Icons.alt_route, () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => AltRoutesScreen()),
+                      );
+                    }),
+                    _iconButton('My Trips', Icons.receipt_long, () {
+                      // TODO: Navigate to My Trips screen
+                    }),
+                  ],
+                ),
+                SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  height: MediaQuery.of(context).size.height * 0.75,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  // ← ADD THIS to give inner horizontal (and vertical) breathing room:
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextField(
-                        decoration: InputDecoration(
-                          hintText: 'Search destination',
-                          prefixIcon: Icon(Icons.search),
-                          filled: true,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            borderSide: BorderSide.none,
+                      // your exact TextField block, unchanged:
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 20),
+                        child: TextField(
+                          decoration: InputDecoration(
+                            hintText: 'Search destination',
+                            prefixIcon: Icon(Icons.search),
+                            filled: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide.none,
+                            ),
                           ),
                         ),
                       ),
                       SizedBox(height: 12),
+
+                      // your map container, unchanged:
                       Container(
                         height: 150,
                         decoration: BoxDecoration(
@@ -143,9 +151,21 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(5),
                           child: GoogleMap(
                             initialCameraPosition: CameraPosition(
-                                target: _currentPosition!, zoom: 15),
-                            onMapCreated: (controller) {
-                              _mapController = controller;
+                              target: _currentPosition!,
+                              zoom: 15,
+                            ),
+                            onMapCreated: (c) => _mapController = c,
+
+                            // ← add this:
+                            onTap: (LatLng tappedPoint) {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => LiveCrowdScreen(
+                                    initialLocation: _currentPosition!,
+                                  ),
+                                ),
+                              );
                             },
                             myLocationEnabled: true,
                             zoomControlsEnabled: false,
@@ -154,35 +174,38 @@ class _HomeScreenState extends State<HomeScreen> {
                             : Center(child: CircularProgressIndicator()),
                       ),
                       SizedBox(height: 12),
-                      Expanded(
-                        child: ListView(
-                          children: [
-                            _sectionCard(
-                              'Frequent destination',
-                              'To: Your school\n • 10 minutes • Arrive at 9:51 am',
-                            ),
-                            SizedBox(height: 10),
-                            _sectionCard(
-                              'Favourites',
-                              '🏫 Your school: School of Computer Sciences\n🏋️‍♀️ Gym: Tan Sri Azman Hashim Centre',
-                            ),
-                            SizedBox(height: 10),
-                            _sectionCard(
-                              'Recent journeys',
-                              'Hamzah Sendut 2 → KOMCA\nNasi Kandar RM1 → USM',
-                            ),
-                          ],
-                        ),
+
+                      // your ListView, unchanged:
+                      ListView(
+                        shrinkWrap: true,
+                        physics: NeverScrollableScrollPhysics(),
+                        children: [
+                          _sectionCard(
+                            'Frequent destination',
+                            'To: Your school\n • 10 minutes • Arrive at 9:51 am',
+                          ),
+                          SizedBox(height: 10),
+                          _sectionCard(
+                            'Favourites',
+                            '🏫 Your school: School of Computer Sciences\n🏋️‍♀️ Gym: Tan Sri Azman Hashim Centre',
+                          ),
+                          SizedBox(height: 10),
+                          _sectionCard(
+                            'Recent journeys',
+                            'Hamzah Sendut 2 → KOMCA\nNasi Kandar RM1 → USM',
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
-              ),
-            ],
-          ),
+                SizedBox(height: 16), // bottom spacing so scroll doesn’t end flush to nav bar
+              ],
+            ),
           ),
         ),
       ),
+
       bottomNavigationBar: BottomNavBar(
         selectedIndex: _selectedIndex,
         onItemTapped: _onItemTapped,

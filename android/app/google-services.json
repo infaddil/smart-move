@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "741867104589",
+    "project_id": "smart-move-2e56d",
+    "storage_bucket": "smart-move-2e56d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:741867104589:android:d4267f0f6923edb5d56f04",
+        "android_client_info": {
+          "package_name": "com.example.smart_move"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "741867104589-ott0m3ek8lbhkm8chvacc1ald99h4lpg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.smart_move",
+            "certificate_hash": "253bdb162092c281a242ff4f1a3843144fec22da"
+          }
+        },
+        {
+          "client_id": "741867104589-9f8egfcdfqi9talntfirjt7nf0tq8a5r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDXL3DhB1Nco8DSmgJfg4VMrgtedkcK_Bg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "741867104589-9f8egfcdfqi9talntfirjt7nf0tq8a5r.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

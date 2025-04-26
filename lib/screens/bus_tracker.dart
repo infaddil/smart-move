@@ -7,6 +7,9 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 
 class BusTrackerScreen extends StatefulWidget {
   @override
@@ -23,6 +26,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   BitmapDescriptor? _busIcon;
   Map<String, List<LatLng>> _busPaths = {};
   final Map<String, Timer> _busTimers = {};
+
 
   Map<String,int>   _busIndex     = {};             // which stop we’re at
   Map<String,LatLng> _busPositions = {};            // actual marker pos
@@ -127,26 +131,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         .get();
 
     return snapshot.docs.map((doc) => doc.data()).toList();
-  }
-  // Add to your BusTracker class
-  Future<int?> calculateETA(LatLng stopLocation) async {
-    if (_currentLocation == null) return null;
-
-    try {
-      // Use Google Maps Directions API
-      final response = await http.get(Uri.parse(
-          'https://maps.googleapis.com/maps/api/directions/json?'
-              'origin=${_currentLocation.latitude},${_currentLocation.longitude}&'
-              'destination=${stopLocation.latitude},${stopLocation.longitude}&'
-              'mode=transit&key=YOUR_GOOGLE_MAPS_KEY'
-      ));
-
-      final data = jsonDecode(response.body);
-      return data['routes'][0]['legs'][0]['duration']['value'] ~/ 60;
-    } catch (e) {
-      print('ETA calculation error: $e');
-      return null;
-    }
   }
 
   @override

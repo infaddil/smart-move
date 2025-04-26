@@ -7,6 +7,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:smart_move/screens/bus_data_service.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
   final LatLng? initialLocation;
@@ -24,7 +25,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   LatLng? _currentLocation;
   List<Map<String, dynamic>> _busStops = [];
   List<Map<String, dynamic>> _sortedStops = [];
-
+  final BusDataService _busDataService = BusDataService();
 
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
@@ -36,10 +37,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   void initState() {
     super.initState();
     if (widget.initialLocation != null) {
-      // use the passed‐in location
       _currentLocation = widget.initialLocation;
     } else {
-      // fallback to real GPS
       _getLocation();
     }
     _loadBusStopsFromFirestore();
@@ -145,7 +144,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     const String region = "us-central1"; // try us-central1 if needed
     final String url = "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/gemini-pro:predict";
     const String accessToken = "YOUR_ACCESS_TOKEN";  // update with current token
-
+    final enhancedStops = await _busDataService.getEnhancedBusStops();
     String prompt = """
   You are a smart transit assistant. Analyze this real-time data:
   

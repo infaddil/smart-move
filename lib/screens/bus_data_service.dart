@@ -1,31 +1,45 @@
-import 'package:smart_move/screens/bus_tracker.dart';
-import 'package:smart_move/screens/bus_route_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:math';
 
-
 class BusDataService {
-  final BusTracker _tracker;
-  final BusRouteService _routeService;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final Random _random = Random();
 
-  BusDataService(this._tracker, this._routeService);
-
   Future<List<Map<String, dynamic>>> getEnhancedBusStops() async {
-    // Get basic stops from your existing source
-    final stops = await _tracker.getBusStops(); // Adapt based on your bus_tracker.dart
+    // 1. Get basic stops
+    final stopsSnapshot = await _firestore.collection('busStops').get();
 
-    // Enhance with dynamic data
-    return stops.map((stop) async {
-      final routes = await _routeService.getRoutesForStop(stop['name']);
-      final eta = await _tracker.calculateETA(stop['location']); // Implement this in bus_tracker.dart
+    // 2. Enhance with dynamic data
+    return await Future.wait(stopsSnapshot.docs.map((doc) async {
+      final stopData = doc.data();
+
+      // Get dynamic routes from 'route' collection
+      final routes = await _getRoutesForStop(stopData['name']);
+
+      // Calculate ETA (we'll implement this separately)
+      final eta = await _calculateETA(stopData['location']);
 
       return {
-        'name': stop['name'],
-        'location': stop['location'],
-        'crowd': _random.nextInt(50) + 5, // Your existing random crowd
-        'eta': eta ?? _random.nextInt(30) + 1, // Fallback if no ETA
+        'name': stopData['name'],
+        'location': stopData['location'],
+        'crowd': _random.nextInt(50) + 5,
+        'eta': eta ?? _random.nextInt(30) + 1, // Fallback
         'routes': routes,
       };
-    }).toList();
+    }));
+    }
+
+  Future<List<String>> _getRoutesForStop(String stopName) async {
+    final routeSnapshot = await _firestore
+        .collection('route')
+        .where('stops', arrayContains: stopName)
+        .get();
+
+    return routeSnapshot.docs.map((doc) => doc.id).toList();
+  }
+
+  Future<int?> _calculateETA(GeoPoint location) async {
+    // We'll implement this after fixing bus_tracker.dart
+    return null;
   }
 }

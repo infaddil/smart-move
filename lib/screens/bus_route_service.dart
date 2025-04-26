@@ -35,46 +35,55 @@ class BusRouteService {
   }
 
   List<Map<String, dynamic>> _computeSegment(
-        List<Map<String, dynamic>> stopsData,
-        int capacity,
-    ) {
-      // Sort descending by crowd
-      stopsData.sort((a, b) =>
+      List<Map<String, dynamic>> stopsData,
+      int capacity, {
+        List<String>? excludedStops, // Add this parameter
+      }) {
+    // Filter out excluded stops first
+    final filteredData = excludedStops != null
+        ? stopsData.where((s) => !excludedStops.contains(s['name'])).toList()
+        : stopsData;
+
+    // Sort descending by crowd
+    filteredData.sort((a, b) =>
         (b['crowd'] as int).compareTo(a['crowd'] as int)
-      );
+    );
 
-      final segment = <Map<String, dynamic>>[];
-      var total = 0;
+    final segment = <Map<String, dynamic>>[];
+    var total = 0;
 
-      for (final s in stopsData) {
-        final crowd = s['crowd'] as int;
-        if (total + crowd <= capacity) {
-          segment.add(s);
-          total += crowd;
-        }
+    for (final s in filteredData) {
+      final crowd = s['crowd'] as int;
+      if (total + crowd <= capacity) {
+        segment.add(s);
+        total += crowd;
       }
-     return segment;
     }
+    return segment;
+  }
 
   /// Public API: returns [currentBusStops, nextBusStops]
   Future<Map<String,List<Map<String,dynamic>>>> getAssignments(
       String busType, {
         int capacity = 60,
+        List<String>? occupiedStops, // Add this parameter
       }) async {
     final designated = await _getDesignatedStops(busType);
-    final allData   = await _loadStopsData(designated);
-    final current   = _computeSegment(allData, capacity);
+    final allData = await _loadStopsData(designated);
 
-    // remaining = those designated stops not in current
-    final remNames  = designated.where((n)=>
-    !current.any((c)=> c['name']==n)
+    // Compute current segment while avoiding occupied stops
+    final current = _computeSegment(allData, capacity, excludedStops: occupiedStops);
+
+    // Compute next segment from remaining stops
+    final remNames = designated.where((n) =>
+    !current.any((c) => c['name'] == n)
     ).toList();
-    final remData   = allData.where((d)=> remNames.contains(d['name'])).toList();
-    final nextSeg   = _computeSegment(remData, capacity);
+    final remData = allData.where((d) => remNames.contains(d['name'])).toList();
+    final nextSeg = _computeSegment(remData, capacity);
 
     return {
       'current': current,
-      'next'   : nextSeg,
+      'next': nextSeg,
     };
   }
 }

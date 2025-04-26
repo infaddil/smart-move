@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
+import 'dart:async';
+import 'package:geolocator/geolocator.dart';
 
 class BusTrackerScreen extends StatefulWidget {
   @override
@@ -12,20 +14,19 @@ class BusTrackerScreen extends StatefulWidget {
 class _BusTrackerScreenState extends State<BusTrackerScreen> {
   GoogleMapController? _mapController;
   final _svc = BusRouteService();
+  BitmapDescriptor? _busIcon;
+  Map<String, List<LatLng>> _busPaths = {};
+  final Map<String, Timer> _busTimers = {};
 
-  // routeType → list of stop names
+  Map<String,int>   _busIndex     = {};             // which stop we’re at
+  Map<String,LatLng> _busPositions = {};            // actual marker pos
+
   Map<String, List<String>> _routes = {};
-
-  // stop name → geo-coordinate
   Map<String, LatLng> _stopLocations = {};
 
   // stop name → crowd count
   Map<String, int> _crowdLevels = {};
-
-  // busId → routeType+suffix (e.g. "A1","A2","B1")
   Map<String, String> _busAssignments = {};
-
-  // e.g. { 'bus1': [ {name, location, crowd, eta}, … ], … }
   final Map<String, List<Map<String,dynamic>>> _busSegments = {};
 
   final Map<String, Color> _routeColors = {
@@ -36,44 +37,170 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
 
   final Map<String, Color> _busColors = {
     'A1': Colors.purple,
-    'A2': Colors.deepPurple,
+    'A2': Colors.deepOrangeAccent,
     'B1': Colors.green,
-    'B2': Colors.lightGreen,
+    'B2': Colors.limeAccent,
     'C1': Colors.pink,
-    'C2': Colors.pinkAccent,
+    'C2': Colors.blue,
   };
 
   Set<Marker> _markers = {};
   Set<Polyline> _polylines = {};
-
+  Map<String,BitmapDescriptor> _busIcons = {};
   @override
   void initState() {
     super.initState();
-    _initData();
-    _initializeAllBuses();
+
+    // 1) Load bus icons
+    _busColors.keys.forEach((code) {
+      BitmapDescriptor.fromAssetImage(
+        ImageConfiguration(size: Size(48, 48)),
+        'assets/bus_$code.png',
+      ).then((d) {
+        if (mounted) {
+          setState(() => _busIcons[code] = d);
+        }
+      }).catchError((e) {
+        debugPrint('❌ Failed to load assets/bus_$code.png → $e');
+        if (mounted) {
+          setState(() => _busIcons[code] = BitmapDescriptor.defaultMarkerWithHue(
+              HSVColor.fromColor(_busColors[code]!).hue
+          ));
+        }
+      });
+    });
+
+    // 2) Load all data and initialize
+    _initData().then((_) async {
+      await _initializeAllBuses();
+      await _buildMapElements();
+
+      // Verify everything is ready before starting animations
+      if (mounted &&
+          _busAssignments.isNotEmpty &&
+          _busPaths.isNotEmpty &&
+          _busPaths.values.every((path) => path.isNotEmpty)) {
+        setState(() {
+          _startBusAnimations();
+        });
+      } else {
+        debugPrint('⚠️ Not starting animations - missing required data');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _stopBusAnimations();
+    _mapController?.dispose();
+    super.dispose();
   }
 
   Future<void> _initializeAllBuses() async {
-    // 1) Randomize which two share the same letter:
     final types = ['A','B','C'];
     final rnd = Random();
-    final primary = types.removeAt(rnd.nextInt(3));           // e.g. 'A'
-    final secondary = types[rnd.nextInt(2)];                  // pick from remaining
+    final primary = types.removeAt(rnd.nextInt(3));
+    final secondary = types[rnd.nextInt(2)];
     _busAssignments['bus1'] = primary + '1';
     _busAssignments['bus2'] = primary + '2';
     _busAssignments['bus3'] = secondary + '1';
 
+    // Track stops that are already assigned to other buses
+    final occupiedStops = <String>[];
 
-    // 2) For each bus, fetch its “current” stop‐segment
     for (var busId in _busAssignments.keys) {
       final code = _busAssignments[busId]!;
       final letter = code[0];
-      final data = await _svc.getAssignments(letter, capacity: 60);
-      // data['current'] is List<Map{name, location, crowd, eta}>
-      _busSegments[busId] = data['current']!;
-    }
+      final data = await _svc.getAssignments(
+        letter,
+        capacity: 60,
+        occupiedStops: occupiedStops,
+      );
 
-    setState(() {});
+      _busSegments[busId] = data['current']!;
+
+      // Add these stops to the occupied list
+      for (var stop in data['current']!) {
+        occupiedStops.add(stop['name'] as String);
+      }
+
+      setState(() {});
+    }
+  }
+  void _onBusTapped(String busId) {
+    final code    = _busAssignments[busId]!;
+    final letter  = code[0];
+    final stops   = _routes[letter]!;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        builder: (ctx, sc) => Column(
+          children: [
+            SizedBox(height: 12),
+            Text('Bus $code', style: TextStyle(fontSize:18, fontWeight:FontWeight.bold)),
+            Text('${stops.first} → ${stops.last}'),
+            Expanded(
+              child: ListView.builder(
+                controller: sc,
+                itemCount: stops.length,
+                itemBuilder: (_, i) {
+                  return ListTile(
+                    leading: i==0
+                        ? Icon(Icons.trip_origin)
+                        : Icon(Icons.circle, size: 12),
+                    title: Text(stops[i]),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _startBusAnimations() {
+    _stopBusAnimations();
+
+    _busAssignments.forEach((busId, code) {
+      final path = _busPaths[busId];
+      if (path == null || path.isEmpty) {
+        debugPrint('⚠️ Cannot animate bus $busId - path is empty');
+        return;
+      }
+
+      // Initialize position to first stop
+      _busPositions[busId] = path[0];
+      _busIndex[busId] = 0;
+
+      _busTimers[busId] = Timer.periodic(Duration(seconds: 3), (t) {
+        if (!mounted) {
+          t.cancel();
+          return;
+        }
+
+        try {
+          final currentIdx = _busIndex[busId] ?? 0;
+          final nextIdx = (currentIdx + 1) % path.length;
+
+          setState(() {
+            _busPositions[busId] = path[nextIdx];
+            _busIndex[busId] = nextIdx;
+          });
+        } catch (e) {
+          debugPrint('⚠️ Animation error for bus $busId: $e');
+          t.cancel();
+        }
+      });
+    });
+  }
+  void _stopBusAnimations() {
+    _busTimers.forEach((busId, timer) {
+      timer.cancel();
+    });
+    _busTimers.clear();
   }
 
   Future<void> _initData() async {
@@ -88,9 +215,10 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     final stopsSnap =
     await FirebaseFirestore.instance.collection('busStops').get();
     for (var doc in stopsSnap.docs) {
-      final gp = doc['location'] as GeoPoint;
-      _stopLocations[doc.id] = LatLng(gp.latitude, gp.longitude);
-    }
+       final geo = doc['location'] as GeoPoint;
+       final name = doc['name'] as String;           // 🔑 use the name
+       _stopLocations[name] = LatLng(geo.latitude, geo.longitude);
+     }
 
     // 3) Load crowd levels
     final crowdSnap =
@@ -103,7 +231,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     _assignBuses();
 
     // 5) Build markers & polylines
-    _buildMapElements();
+    await _buildMapElements();
 
     setState(() {});
   }
@@ -124,46 +252,31 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     };
   }
 
-  void _buildMapElements() {
+  Future<void> _buildMapElements() async {
     _markers.clear();
     _polylines.clear();
+    _busPaths.clear();
 
     _busAssignments.forEach((busId, routeCode) {
-      final routeType = routeCode[0]; // 'A','B' or 'C'
-      final color = _routeColors[routeType]!;
-      final stops = _routes[routeType]!;
+      final letter = routeCode[0];
+      final color = _busColors[routeCode]!;
+      final stops = _routes[letter]!;
 
-      // build polyline
+      // 1) Build the animation path:
       final coords = stops
           .map((name) => _stopLocations[name])
           .whereType<LatLng>()
           .toList();
-      _polylines.add(Polyline(
-        polylineId: PolylineId(busId),
-        points: coords,
-        width: 5,
-        color: color,
-      ));
 
-      // build markers
-      for (var s in stops) {
-        final loc = _stopLocations[s];
-        if (loc == null) continue;
-        _markers.add(Marker(
-          markerId: MarkerId('$busId-$s'),
-          position: loc,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            _hueFromRoute(routeType),
-          ),
-          infoWindow: InfoWindow(
-            title: s,
-            snippet: 'Bus $routeCode · Crowd: ${_crowdLevels[s] ?? 0}',
-          ),
-        ));
+      if (coords.isEmpty) {
+        debugPrint('⚠️ No coordinates for bus $busId ($routeCode)');
+        return;
       }
+
+      _busPaths[busId] = coords;
+      // ... rest of the method
     });
   }
-
   double _hueFromRoute(String r) {
     switch (r) {
       case 'A':
@@ -178,24 +291,63 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   }
   Set<Marker> get _allMarkers {
     final markers = <Marker>{};
+
+    // Add stop markers
     _busSegments.forEach((busId, stops) {
-      final hue = _hueFromRoute(_busAssignments[busId]![0]);
+      if (stops == null) return;
+      final code = _busAssignments[busId]!;
+      if (stops == null) return;
+      final hue = HSVColor.fromColor(_busColors[code]!).hue;
+
       for (var s in stops) {
+        if (s['location'] == null) continue;
         markers.add(Marker(
-          markerId: MarkerId('$busId-${s['name']}'),
+          markerId: MarkerId('$busId-stop-${s['name']}'),
           position: s['location'] as LatLng,
           icon: BitmapDescriptor.defaultMarkerWithHue(hue),
           infoWindow: InfoWindow(
             title: s['name'],
-            snippet:
-            'Bus ${_busAssignments[busId]} · Crowd: ${s['crowd']}, ETA: ${s['eta']} mins',
+            snippet: 'Bus $code · Crowd: ${s['crowd']}, ETA: ${s['eta']} mins',
           ),
         ));
       }
     });
+
+    // Add moving bus markers
+    _busPositions.forEach((busId, pos) {
+      if (pos == null) return;
+      final code = _busAssignments[busId]!;
+      if (pos == null) return;
+      final icon = _busIcons[code];
+      if (pos == null) return;
+      if (icon != null) {
+        markers.add(Marker(
+          markerId: MarkerId('$busId-bus'),
+          position: pos,
+          icon: icon,
+          flat: true, // Makes the marker flat against the map
+          rotation: _getBusRotation(busId), // Optional: rotate bus in direction of travel
+          onTap: () => _onBusTapped(busId),
+        ));
+      }
+    });
+
     return markers;
   }
 
+// Helper method to calculate bus direction (optional)
+  double _getBusRotation(String busId) {
+    final path = _busPaths[busId] ?? [];
+    final currentIdx = path.indexOf(_busPositions[busId]!);
+    if (currentIdx <= 0 || currentIdx >= path.length - 1) return 0;
+
+    final prev = path[currentIdx - 1];
+    final next = path[currentIdx + 1];
+    return Geolocator.bearingBetween(
+      prev.latitude, prev.longitude,
+      next.latitude, next.longitude,
+    );
+  }
   Set<Polyline> get _allPolylines {
     final lines = <Polyline>{};
     _busAssignments.forEach((busId, code) {
@@ -214,7 +366,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         polylineId: PolylineId(busId),
         points: pts,
         width: 5,
-        color: polyColor,        // full-route color
+        color: polyColor.withOpacity(0.5),
       ));
     });
     return lines;
@@ -222,7 +374,9 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final loaded = _busSegments.length == _busAssignments.length;
+    final loaded =
+          _busAssignments.isNotEmpty
+          && _busSegments.length == _busAssignments.length;
     if (!loaded) {
       return Scaffold(
         appBar: AppBar(
@@ -233,7 +387,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       );
     }
 
-    final firstStops = _busSegments['bus1']!;
+    final firstBusId = _busAssignments.keys.first;
+        final firstStops  = _busSegments[firstBusId]!;
     final center = firstStops.isNotEmpty
         ? firstStops.first['location'] as LatLng
         : LatLng (5.354792742851638, 100.30181627359067);

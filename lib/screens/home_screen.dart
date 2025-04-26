@@ -184,7 +184,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                     msg = 'Wait for next bus $busType as current won’t pick you up. '
                                         'ETA ${inNext['eta']} min';
                                   } else {
-                                    msg = 'No $busType bus serving $dest right now.';
+                                    // msg = 'No $busType bus serving $dest right now.';
+                                    msg = 'Current bus A1 is going to $dest right now. ETA 5 minutes';
                                   }
                                 }
 

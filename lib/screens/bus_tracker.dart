@@ -162,11 +162,11 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     final stops = _routes[letter]!;
     final currentProgress = _busProgress[busId] ?? 0.0;
     final path = _busPaths[busId] ?? [];
+    final segmentIndex = (currentProgress * (path.length - 1)).floor();
+    final segmentProgress = (currentProgress * (path.length - 1)) - segmentIndex;
 
-    // Calculate current segment and progress within segment
-    final segmentLength = path.length > 1 ? path.length - 1 : 1;
-    final segmentProgressValue = (currentProgress * segmentLength) - (currentProgress * segmentLength).floor();
-    final segmentIndex = (currentProgress * segmentLength).floor();
+    // Get which stops are actually being serviced
+    final servicedStops = _busSegments[busId]?.map((s) => s['name'] as String).toList() ?? [];
 
     showModalBottomSheet(
       context: context,
@@ -176,54 +176,93 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         builder: (ctx, sc) => Column(
           children: [
             SizedBox(height: 12),
-            Text('Bus $code', style: TextStyle(fontSize:18, fontWeight:FontWeight.bold)),
+            Text('Bus $code', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             Text('${stops.first} → ${stops.last}'),
             Expanded(
               child: ListView.builder(
                 controller: sc,
                 itemCount: stops.length,
                 itemBuilder: (_, i) {
-                  // Calculate if this is the current stop
-                  bool isCurrentStop = false;
-                  bool isPassedStop = false;
+                  final isServiced = servicedStops.contains(stops[i]);
+                  final isCurrent = i == segmentIndex ||
+                      (i == segmentIndex + 1 && segmentProgress > 0.5);
+                  final isPassed = i < segmentIndex ||
+                      (i == segmentIndex && segmentProgress > 0.5);
 
-                  if (path.isNotEmpty) {
-                    final stopProgress = i / (stops.length - 1);
-                    isPassedStop = stopProgress <= currentProgress;
-                    isCurrentStop = (i == segmentIndex ||
-                        (i == segmentIndex + 1 && segmentProgressValue > 0.9));
-                  }
-
-                  return ListTile(
-                    leading: Container(
-                      width: 24,
-                      height: 24,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: isCurrentStop
-                            ? _busColors[code]!
-                            : isPassedStop
-                            ? _busColors[code]!.withOpacity(0.5)
-                            : Colors.grey[300],
-                        border: Border.all(
-                          color: _busColors[code]!,
-                          width: isPassedStop ? 2 : 1,
+                  return Column(
+                    children: [
+                      // Timeline connector (except for first item)
+                      if (i > 0)
+                        Container(
+                          height: 20,
+                          width: 2,
+                          color: isPassed
+                              ? _busColors[code]!.withOpacity(isServiced ? 0.8 : 0.3)
+                              : Colors.grey[300],
+                          margin: EdgeInsets.only(left: 11),
                         ),
+                      // Stop item
+                      ListTile(
+                        leading: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isCurrent
+                                ? _busColors[code]!
+                                : isServiced
+                                ? _busColors[code]!.withOpacity(isPassed ? 0.8 : 0.5)
+                                : Colors.grey[300],
+                            border: Border.all(
+                              color: _busColors[code]!,
+                              width: isServiced ? 2 : 1,
+                            ),
+                          ),
+                          child: i == 0
+                              ? Icon(Icons.trip_origin, size: 12, color: Colors.white)
+                              : null,
+                        ),
+                        title: Text(
+                          stops[i],
+                          style: TextStyle(
+                            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                            color: isServiced ? Colors.black : Colors.grey,
+                          ),
+                        ),
+                        subtitle: isCurrent
+                            ? Text(
+                          segmentProgress > 0.5 && i < stops.length - 1
+                              ? 'Heading to ${stops[i+1]}'
+                              : 'At ${stops[i]}',
+                          style: TextStyle(color: _busColors[code]!),
+                        )
+                            : null,
                       ),
-                      child: i == 0
-                          ? Icon(Icons.trip_origin, size: 12, color: Colors.white)
-                          : null,
-                    ),
-                    title: Text(
-                      stops[i],
-                      style: TextStyle(
-                        fontWeight: isCurrentStop ? FontWeight.bold : FontWeight.normal,
-                        color: isCurrentStop ? _busColors[code]! : Colors.black,
-                      ),
-                    ),
-                    subtitle: isCurrentStop
-                        ? Text('Current location', style: TextStyle(color: _busColors[code]!))
-                        : null,
+                      // Bus position indicator
+                      if (isCurrent)
+                        Padding(
+                          padding: EdgeInsets.only(left: 24),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.directions_bus,
+                                color: _busColors[code]!,
+                                size: 20,
+                              ),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: LinearProgressIndicator(
+                                  value: i == segmentIndex
+                                      ? segmentProgress
+                                      : 1 - segmentProgress,
+                                  backgroundColor: Colors.grey[200],
+                                  valueColor: AlwaysStoppedAnimation(_busColors[code]!),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   );
                 },
               ),
@@ -248,11 +287,13 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
 
     _busAssignments.forEach((busId, code) {
       final path = _busPaths[busId];
-      _busVelocities[busId] = 0.0;
       if (path == null || path.isEmpty) return;
 
       _busPositions[busId] = path[0];
       _busIndex[busId] = 0;
+      _busProgress[busId] = 0.0;
+
+      // Calculate total route distance for speed normalization
       double totalDistance = 0;
       for (int i = 0; i < path.length - 1; i++) {
         totalDistance += Geolocator.distanceBetween(
@@ -260,9 +301,11 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
           path[i+1].latitude, path[i+1].longitude,
         );
       }
+
+      // Adjust speed based on route length
+      final baseSpeed = 0.0002; // Base speed coefficient
       final speedModifier = _busSpeeds[code] ?? 1.0;
-      final baseDuration = (totalDistance / 5).clamp(100, 500).toInt();
-      final duration = Duration(milliseconds: (baseDuration / speedModifier).toInt());
+      final adjustedSpeed = baseSpeed * speedModifier * (1000 / totalDistance);
 
       _busTimers[busId] = Timer.periodic(Duration(milliseconds: 16), (t) {
         if (!mounted) {
@@ -271,15 +314,14 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         }
 
         try {
-          final currentIdx = _busIndex[busId] ?? 0;
-          final progress = _busProgress[busId] ?? 0.0;
-          final segmentLength = path.length > 1 ? path.length - 1 : 1;
+          final currentProgress = _busProgress[busId] ?? 0.0;
+          double newProgress = currentProgress + adjustedSpeed;
 
-          // Calculate new progress (0.0 to 1.0 for entire route)
-          double newProgress = progress + (0.0005 * speedModifier);
-          if (newProgress >= 1.0) newProgress = 0.0;
+          if (newProgress >= 1.0) {
+            newProgress = 0.0; // Loop back to start
+          }
 
-          // Find current segment and position within segment
+          final segmentLength = path.length - 1;
           final segmentIndex = (newProgress * segmentLength).floor();
           final segmentProgress = (newProgress * segmentLength) - segmentIndex;
 
@@ -303,8 +345,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       });
     });
   }
-
-// Add this helper method
   void _moveBusAlongPath(String busId, List<LatLng> path, Timer timer) {
     if (!mounted) {
       timer.cancel();

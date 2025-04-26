@@ -7,6 +7,7 @@ import 'package:smart_move/screens/alt_routes_screen.dart';
 import 'package:smart_move/screens/profile_screen.dart';
 import 'package:smart_move/screens/route_screen.dart'; // ← make sure this exists
 import 'firebase_options.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 /// Custom HttpOverrides class to bypass certificate validation (DEV ONLY)
 class MyHttpOverrides extends HttpOverrides {
@@ -26,6 +27,7 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  await dotenv.load(fileName: ".env");
   runApp(NoCramApp());
 }
 

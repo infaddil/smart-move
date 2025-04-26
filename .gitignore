@@ -49,3 +49,4 @@ app.*.map.json
 /android/app/src/main/AndroidManifest.xml
 /android/app/src/debug/AndroidManifest.xml
 *.json
+.env

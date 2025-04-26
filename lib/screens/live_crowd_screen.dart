@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_data_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
   final LatLng? initialLocation;
@@ -168,11 +169,16 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
         "Content-Type": "application/json",
         "Authorization": "Bearer $accessToken",
       };
+      final apiKey = dotenv.env['GEMINI_API_KEY'];
 
       final response = await http.post(
-        Uri.parse(url),
-        headers: headers,
-        body: jsonEncode(payload),
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "contents": [{
+            "parts": [{"text": "Your prompt here"}]
+          }]
+        }),
       ).timeout(const Duration(seconds: 30));
 
       debugPrint("Gemini response status: ${response.statusCode}");

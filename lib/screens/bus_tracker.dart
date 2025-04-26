@@ -127,6 +127,33 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       setState(() {});
     }
   }
+
+  // Add these methods to your _BusTrackerScreenState class
+
+  /// Calculate points between two coordinates
+  List<LatLng> _getPointsBetween(LatLng start, LatLng end, int segments) {
+    final points = <LatLng>[];
+    for (int i = 0; i <= segments; i++) {
+      final ratio = i / segments;
+      points.add(LatLng(
+        start.latitude + (end.latitude - start.latitude) * ratio,
+        start.longitude + (end.longitude - start.longitude) * ratio,
+      ));
+    }
+    return points;
+  }
+
+  /// Generate a smooth path with intermediate points between all stops
+  List<LatLng> _generateSmoothPath(List<LatLng> stops, {int segments = 10}) {
+    if (stops.length < 2) return stops;
+
+    final path = <LatLng>[];
+    for (int i = 0; i < stops.length - 1; i++) {
+      final segment = _getPointsBetween(stops[i], stops[i+1], segments);
+      path.addAll(segment);
+    }
+    return path;
+  }
   void _onBusTapped(String busId) {
     final code    = _busAssignments[busId]!;
     final letter  = code[0];
@@ -161,21 +188,26 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     );
   }
 
+  // In _startBusAnimations() method, fix the Timer callback issue:
   void _startBusAnimations() {
     _stopBusAnimations();
 
     _busAssignments.forEach((busId, code) {
       final path = _busPaths[busId];
-      if (path == null || path.isEmpty) {
-        debugPrint('⚠️ Cannot animate bus $busId - path is empty');
-        return;
-      }
+      if (path == null || path.isEmpty) return;
 
-      // Initialize position to first stop
       _busPositions[busId] = path[0];
       _busIndex[busId] = 0;
+      double totalDistance = 0;
+      for (int i = 0; i < path.length - 1; i++) {
+        totalDistance += Geolocator.distanceBetween(
+          path[i].latitude, path[i].longitude,
+          path[i+1].latitude, path[i+1].longitude,
+        );
+      }
+      final duration = Duration(milliseconds: (totalDistance / 5).clamp(100, 500).toInt());
 
-      _busTimers[busId] = Timer.periodic(Duration(seconds: 3), (t) {
+      _busTimers[busId] = Timer.periodic(duration, (t) {
         if (!mounted) {
           t.cancel();
           return;
@@ -188,6 +220,19 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
           setState(() {
             _busPositions[busId] = path[nextIdx];
             _busIndex[busId] = nextIdx;
+
+            if (nextIdx == 0) {
+              // Pause briefly at the end of route
+              t.cancel();
+              Timer(Duration(seconds: 2), () {
+                if (mounted) {
+                  _busTimers[busId] = Timer.periodic(
+                    duration,
+                        (timer) => _moveBusAlongPath(busId, path, timer),
+                  );
+                }
+              });
+            }
           });
         } catch (e) {
           debugPrint('⚠️ Animation error for bus $busId: $e');
@@ -195,6 +240,42 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         }
       });
     });
+  }
+
+// Add this helper method
+  void _moveBusAlongPath(String busId, List<LatLng> path, Timer timer) {
+    if (!mounted) {
+      timer.cancel();
+      return;
+    }
+
+    try {
+      final currentIdx = _busIndex[busId] ?? 0;
+      final nextIdx = (currentIdx + 1) % path.length;
+
+      setState(() {
+        _busPositions[busId] = path[nextIdx];
+        _busIndex[busId] = nextIdx;
+      });
+    } catch (e) {
+      debugPrint('⚠️ Animation error for bus $busId: $e');
+      timer.cancel();
+    }
+  }
+  double _getBusRotation(String busId) {
+    final path = _busPaths[busId] ?? [];
+    final currentPos = _busPositions[busId];
+    if (currentPos == null || path.length < 2) return 0;
+
+    final currentIdx = path.indexOf(currentPos);
+    if (currentIdx <= 0 || currentIdx >= path.length - 1) return 0;
+
+    final prev = path[currentIdx - 1];
+    final next = path[currentIdx + 1];
+    return Geolocator.bearingBetween(
+      prev.latitude, prev.longitude,
+      next.latitude, next.longitude,
+    );
   }
   void _stopBusAnimations() {
     _busTimers.forEach((busId, timer) {
@@ -262,19 +343,46 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       final color = _busColors[routeCode]!;
       final stops = _routes[letter]!;
 
-      // 1) Build the animation path:
-      final coords = stops
+      // Get stop coordinates
+      final stopCoords = stops
           .map((name) => _stopLocations[name])
           .whereType<LatLng>()
           .toList();
 
-      if (coords.isEmpty) {
+      if (stopCoords.isEmpty) {
         debugPrint('⚠️ No coordinates for bus $busId ($routeCode)');
         return;
       }
 
-      _busPaths[busId] = coords;
-      // ... rest of the method
+      // Generate smooth path with intermediate points
+      _busPaths[busId] = _generateSmoothPath(stopCoords);
+
+      // Draw the polyline
+      _polylines.add(Polyline(
+        polylineId: PolylineId(busId),
+        points: stopCoords, // Use original stops for the polyline
+        width: 5,
+        color: color.withOpacity(0.6),
+      ));
+
+      // Draw the static stop markers
+      final hue = HSVColor.fromColor(color).hue;
+      for (var s in stops) {
+        final loc = _stopLocations[s];
+        if (loc == null) {
+          debugPrint('⚠️ Missing location for stop "$s" on route $routeCode');
+          continue;
+        }
+        _markers.add(Marker(
+          markerId: MarkerId('$busId-stop-$s'),
+          position: loc,
+          icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+          infoWindow: InfoWindow(
+            title: s,
+            snippet: 'Bus $routeCode',
+          ),
+        ));
+      }
     });
   }
   double _hueFromRoute(String r) {
@@ -296,7 +404,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     _busSegments.forEach((busId, stops) {
       if (stops == null) return;
       final code = _busAssignments[busId]!;
-      if (stops == null) return;
       final hue = HSVColor.fromColor(_busColors[code]!).hue;
 
       for (var s in stops) {
@@ -317,37 +424,30 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     _busPositions.forEach((busId, pos) {
       if (pos == null) return;
       final code = _busAssignments[busId]!;
-      if (pos == null) return;
       final icon = _busIcons[code];
-      if (pos == null) return;
       if (icon != null) {
+        final path = _busPaths[busId] ?? [];
+        final currentIdx = _busIndex[busId] ?? 0;
+        final progress = path.isNotEmpty ? (currentIdx / path.length) : 0;
+
         markers.add(Marker(
           markerId: MarkerId('$busId-bus'),
           position: pos,
           icon: icon,
-          flat: true, // Makes the marker flat against the map
-          rotation: _getBusRotation(busId), // Optional: rotate bus in direction of travel
+          flat: true,
+          rotation: _getBusRotation(busId),
+          infoWindow: InfoWindow(
+            title: 'Bus $code',
+            snippet: 'Progress: ${(progress * 100).toStringAsFixed(1)}%',
+          ),
           onTap: () => _onBusTapped(busId),
         ));
-      }
-    });
+        }
+        });
 
     return markers;
   }
 
-// Helper method to calculate bus direction (optional)
-  double _getBusRotation(String busId) {
-    final path = _busPaths[busId] ?? [];
-    final currentIdx = path.indexOf(_busPositions[busId]!);
-    if (currentIdx <= 0 || currentIdx >= path.length - 1) return 0;
-
-    final prev = path[currentIdx - 1];
-    final next = path[currentIdx + 1];
-    return Geolocator.bearingBetween(
-      prev.latitude, prev.longitude,
-      next.latitude, next.longitude,
-    );
-  }
   Set<Polyline> get _allPolylines {
     final lines = <Polyline>{};
     _busAssignments.forEach((busId, code) {

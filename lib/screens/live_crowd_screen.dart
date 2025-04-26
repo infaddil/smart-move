@@ -139,91 +139,138 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   }
 
   // --------------------- VERTEX AI CALL (Returning Multiple Candidates) ----------------------------- //
-  Future<String> _callVertexAIPrediction(String query) async {
-    const String project = "smart-move-455808";
-    const String region = "us-central1"; // try us-central1 if needed
-    final String url = "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/gemini-pro:predict";
-    const String accessToken = "YOUR_ACCESS_TOKEN";  // update with current token
-    final enhancedStops = await _busDataService.getEnhancedBusStops();
-    String prompt = """
-  You are a smart transit assistant. Analyze this real-time data:
-  
-  CURRENT BUS STOPS:
-  ${enhancedStops.map((stop) =>
-    "${stop['name']}: ${stop['crowd']} people | ETA ${stop['eta']} mins | Buses: ${stop['routes']?.join(', ') ?? 'Unknown'}"
-    ).join('\n')}
-  
-  USER LOCATION: ${_currentLocation?.latitude}, ${_currentLocation?.longitude}
-  
-  Provide recommendations in this exact format:
-  
-  1. [Least Crowded] - Stop with fewest people
-  2. [Fastest Option] - Quickest route considering ETA
-  3. [Route Details] - Which buses go where from this stop
-  4. [Smart Alternative] - Walking/other options if better
-  
-  Question: $query
-  """;
-
-    final payload = {
-      "contents": [{
-        "parts": [{"text": prompt}]
-      }],
-      "generationConfig": {
-        "temperature": 0.5,
-        "maxOutputTokens": 500
+  Future<String> _callVertexAIPrediction(String prompt) async {
+    try {
+      final accessToken = await getGoogleAccessToken();
+      if (accessToken.isEmpty) {
+        throw Exception('No access token available');
       }
-    };
 
-    print("Calling Vertex AI with payload: ${jsonEncode(payload)}");
+      const String project = "smart-move-455808";
+      const String region = "us-central1";
+      final String url = "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/gemini-pro:predict";
 
-    final headers = {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer $accessToken",
-    };
+      debugPrint("Sending prompt to Gemini:\n$prompt");
 
-    final response = await http.post(Uri.parse(url), headers: headers, body: jsonEncode(payload));
-    print("HTTP status: ${response.statusCode}");
-    print("Response body: ${response.body}");
+      final payload = {
+        "contents": [{
+          "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+          "temperature": 0.5,
+          "maxOutputTokens": 1000,
+          "topP": 0.8,
+          "topK": 40
+        }
+      };
 
-    if (response.statusCode == 200) {
-      final Map<String, dynamic> responseData = jsonDecode(response.body);
-      return responseData["predictions"][0]["candidates"][0]["content"] ??
-          "No suggestion returned from AI.";
-    } else {
-      throw Exception("Vertex AI call failed: ${response.statusCode} ${response.body}");
+      final headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $accessToken",
+      };
+
+      final response = await http.post(
+        Uri.parse(url),
+        headers: headers,
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 30));
+
+      debugPrint("Gemini response status: ${response.statusCode}");
+      debugPrint("Gemini response body: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        final candidates = responseData['candidates'] ?? [];
+        if (candidates.isNotEmpty) {
+          return candidates[0]['content']['parts'][0]['text'] ??
+              "No response content from Gemini";
+        }
+        return "No candidates returned from Gemini";
+      } else {
+        throw Exception("API Error ${response.statusCode}: ${response.body}");
+      }
+    } catch (e) {
+      debugPrint("Gemini API Error: $e");
+      return "Error getting response: ${e.toString()}";
     }
+  }
+  String _buildEnhancedPrompt(String query, List<Map<String, dynamic>> stops) {
+    // Format the stops information clearly
+    final stopsInfo = stops.map((stop) {
+      return """
+    🚏 ${stop['name']}
+    - 👥 Crowd: ${stop['crowd']} people
+    - ⏱️ ETA: ${stop['eta']} minutes
+    - 🚌 Routes: ${stop['routes']?.join(', ') ?? 'None'}
+    """;
+    }).join('\n');
+
+    return """
+  You are SmartMove, an expert public transportation assistant in Malaysia. 
+  Provide concise, actionable advice based on this real-time data:
+
+  CURRENT BUS STOPS NEAR USER:
+  $stopsInfo
+
+  USER'S QUESTION: $query
+
+  RESPONSE REQUIREMENTS:
+  1. Start with most relevant recommendation
+  2. Include specific stop names and route numbers
+  3. Mention crowd levels and ETAs
+  4. Keep response under 200 words
+  5. Format clearly with emojis
+
+  EXAMPLE RESPONSE:
+  "🚍 Best option: Take Route BHEPA from Aman Damai (15 people, 5 min ETA). 
+  🚶 Alternative: Walk to BHEPA (10 min) if you want to avoid crowds."
+
+  NOW ANSWER THE USER'S QUESTION:
+  """;
   }
 
   void _sendUserQuery(String query) async {
+    if (query.trim().isEmpty) return;
+
     setState(() {
       _chatHistory.add({"sender": "user", "message": query});
-      _chatHistory.add({"sender": "ai", "message": "⌛ Analyzing real-time data..."});
+      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing real-time data..."});
     });
 
     try {
-      final response = await _callVertexAIPrediction(query);
+      // 1. Get enhanced stop data
+      final stops = await _busDataService.getEnhancedBusStops();
+      if (stops.isEmpty) {
+        throw Exception('No bus stop data available');
+      }
 
-      // Parse the numbered recommendations
-      final recommendations = response.split('\n')
-          .where((line) => line.startsWith(RegExp(r'^\d\.\s')))
-          .map((rec) => rec.substring(3))
-          .toList();
+      // 2. Build the prompt
+      final prompt = _buildEnhancedPrompt(query, stops);
+      debugPrint("Final prompt:\n$prompt");
 
+      // 3. Get Gemini response
+      final response = await _callVertexAIPrediction(prompt);
+      debugPrint("Raw Gemini response:\n$response");
+
+      // 4. Update UI
       setState(() {
         _chatHistory.removeLast();
-        _chatHistory.addAll([
-          {"sender": "ai", "message": "🚍 Smart Recommendations:"},
-          {"sender": "ai", "message": recommendations[0]},
-          {"sender": "ai", "message": recommendations[1]},
-          {"sender": "ai", "message": recommendations[2]},
-          {"sender": "ai", "message": recommendations[3]},
-        ]);
+        _chatHistory.add({
+          "sender": "ai",
+          "message": response.contains("Error") ?
+          "⚠️ $response" :
+          "🚍 SmartMove Advice:\n$response"
+        });
       });
+
     } catch (e) {
+      debugPrint("Chat error: $e");
       setState(() {
         _chatHistory.removeLast();
-        _chatHistory.add({"sender": "ai", "message": "❌ Error: ${e.toString()}"});
+        _chatHistory.add({
+          "sender": "ai",
+          "message": "⚠️ Sorry, I couldn't process your request. Please try again later."
+        });
       });
     }
   }

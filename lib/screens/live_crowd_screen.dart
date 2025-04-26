@@ -57,6 +57,33 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       });
     });
   }
+
+  Future<String> getGoogleAccessToken() async {
+    try {
+      // Ensure user is signed in
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('User not authenticated');
+      }
+
+      // Get the ID token
+      final idToken = await user.getIdToken();
+      return idToken ?? '';
+    } catch (e) {
+      print('Error getting access token: $e');
+      throw Exception('Failed to get access token');
+    }
+  }
+  Future<Map<String, dynamic>> _fetchBusRoutes(String stopName) async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('busStops')
+        .where('name', isEqualTo: stopName)
+        .get();
+
+    if (snapshot.docs.isEmpty) return {};
+    return snapshot.docs.first.data();
+  }
+
   Future<void> _fetchUserRole() async {
     final doc = await FirebaseFirestore.instance
         .collection('users')
@@ -116,23 +143,37 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   Future<String> _callVertexAIPrediction(String query) async {
     const String project = "smart-move-455808";
     const String region = "us-central1"; // try us-central1 if needed
-    final String url =
-        "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/chat-bison:predict";
+    final String url = "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/gemini-pro:predict";
     const String accessToken = "YOUR_ACCESS_TOKEN";  // update with current token
 
-    String prompt = "Here are the current bus stops:\n";
-    for (var stop in _busStops) {
-      final LatLng loc = stop['location'] as LatLng;
-      prompt += "${stop['name']}: ${stop['crowd']} ppl, ETA ${stop['eta']} min.\n";
-    }
-    prompt += "\nMy current location is: ${_currentLocation?.latitude.toStringAsFixed(4)}, ${_currentLocation?.longitude.toStringAsFixed(4)}.\n";
-    prompt += "Which bus stop should I choose to avoid crowd and get there quickly?";
+    String prompt = """
+  You are a smart transit assistant. Analyze this real-time data:
+  
+  CURRENT BUS STOPS:
+  ${enhancedStops.map((stop) =>
+    "${stop['name']}: ${stop['crowd']} people | ETA ${stop['eta']} mins | Buses: ${stop['routes']?.join(', ') ?? 'Unknown'}"
+    ).join('\n')}
+  
+  USER LOCATION: ${_currentLocation?.latitude}, ${_currentLocation?.longitude}
+  
+  Provide recommendations in this exact format:
+  
+  1. [Least Crowded] - Stop with fewest people
+  2. [Fastest Option] - Quickest route considering ETA
+  3. [Route Details] - Which buses go where from this stop
+  4. [Smart Alternative] - Walking/other options if better
+  
+  Question: $query
+  """;
 
-    final Map<String, dynamic> payload = {
-      "instances": [
-        {"messages": [{"author": "user", "content": prompt}]}
-      ],
-      "parameters": {"temperature": 0.7, "maxOutputTokens": 256, "topP": 0.8, "topK": 40}
+    final payload = {
+      "contents": [{
+        "parts": [{"text": prompt}]
+      }],
+      "generationConfig": {
+        "temperature": 0.5,
+        "maxOutputTokens": 500
+      }
     };
 
     print("Calling Vertex AI with payload: ${jsonEncode(payload)}");
@@ -156,22 +197,34 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   }
 
   void _sendUserQuery(String query) async {
-    if (query.trim().isEmpty) return;
     setState(() {
       _chatHistory.add({"sender": "user", "message": query});
-      _chatController.clear();
+      _chatHistory.add({"sender": "ai", "message": "⌛ Analyzing real-time data..."});
     });
+
     try {
-      print("Sending user query: $query");
-      String aiResponse = await _callVertexAIPrediction(query);
-      print("Received AI response: $aiResponse");
+      final response = await _callVertexAIPrediction(query);
+
+      // Parse the numbered recommendations
+      final recommendations = response.split('\n')
+          .where((line) => line.startsWith(RegExp(r'^\d\.\s')))
+          .map((rec) => rec.substring(3))
+          .toList();
+
       setState(() {
-        _chatHistory.add({"sender": "ai", "message": aiResponse});
+        _chatHistory.removeLast();
+        _chatHistory.addAll([
+          {"sender": "ai", "message": "🚍 Smart Recommendations:"},
+          {"sender": "ai", "message": recommendations[0]},
+          {"sender": "ai", "message": recommendations[1]},
+          {"sender": "ai", "message": recommendations[2]},
+          {"sender": "ai", "message": recommendations[3]},
+        ]);
       });
-    } catch (error) {
-      print("Error: $error");
+    } catch (e) {
       setState(() {
-        _chatHistory.add({"sender": "ai", "message": "Error: $error"});
+        _chatHistory.removeLast();
+        _chatHistory.add({"sender": "ai", "message": "❌ Error: ${e.toString()}"});
       });
     }
   }

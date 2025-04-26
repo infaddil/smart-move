@@ -172,7 +172,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       final apiKey = dotenv.env['GEMINI_API_KEY'];
 
       final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$apiKey'),
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-exp-03-25:generateContent?key=$apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "contents": [{

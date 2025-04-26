@@ -5,6 +5,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
+import 'package:smart_move/widgets/nav_bar.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class BusTrackerScreen extends StatefulWidget {
   @override
@@ -12,6 +14,9 @@ class BusTrackerScreen extends StatefulWidget {
 }
 
 class _BusTrackerScreenState extends State<BusTrackerScreen> {
+  int _selectedIndex = 0;
+  User? _currentUser;
+  String? _userRole;
   GoogleMapController? _mapController;
   final Map<String, double> _busVelocities = {};
   final _svc = BusRouteService();
@@ -51,8 +56,20 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   @override
   void initState() {
     super.initState();
+    _currentUser = FirebaseAuth.instance.currentUser;
+    if (_currentUser != null) _fetchUserRole();
 
-    // 1) Load bus icons
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      setState(() {
+        _currentUser = user;
+        if (user != null) {
+          _fetchUserRole();
+        } else {
+          _userRole = null;
+        }
+      });
+    });
+
     _busColors.keys.forEach((code) {
       BitmapDescriptor.fromAssetImage(
         ImageConfiguration(size: Size(48, 48)),
@@ -87,6 +104,20 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       } else {
         debugPrint('⚠️ Not starting animations - missing required data');
       }
+    });
+  }
+  Future<void> _fetchUserRole() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    setState(() {
+      _userRole = doc.data()?['role'];
+    });
+  }
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
     });
   }
 
@@ -291,9 +322,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
 
       _busPositions[busId] = path[0];
       _busIndex[busId] = 0;
-      _busProgress[busId] = 0.0;
 
-      // Calculate total route distance for speed normalization
+      // Calculate base duration with speed variation
       double totalDistance = 0;
       for (int i = 0; i < path.length - 1; i++) {
         totalDistance += Geolocator.distanceBetween(
@@ -302,26 +332,27 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         );
       }
 
-      // Adjust speed based on route length
-      final baseSpeed = 0.0002; // Base speed coefficient
+      // Apply speed modifier (20% variation)
       final speedModifier = _busSpeeds[code] ?? 1.0;
-      final adjustedSpeed = baseSpeed * speedModifier * (1000 / totalDistance);
+      final baseDuration = (totalDistance / 5).clamp(100, 500).toInt();
+      final duration = Duration(milliseconds: (baseDuration / speedModifier).toInt());
 
-      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 16), (t) {
+      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) {
         if (!mounted) {
           t.cancel();
           return;
         }
 
         try {
-          final currentProgress = _busProgress[busId] ?? 0.0;
-          double newProgress = currentProgress + adjustedSpeed;
+          final currentIdx = _busIndex[busId] ?? 0;
+          final progress = _busProgress[busId] ?? 0.0;
+          final segmentLength = path.length > 1 ? path.length - 1 : 1;
 
-          if (newProgress >= 1.0) {
-            newProgress = 0.0; // Loop back to start
-          }
+          // Calculate new progress (0.0 to 1.0 for entire route)
+          double newProgress = progress + (0.0005 * speedModifier);
+          if (newProgress >= 1.0) newProgress = 0.0;
 
-          final segmentLength = path.length - 1;
+          // Find current segment and position within segment
           final segmentIndex = (newProgress * segmentLength).floor();
           final segmentProgress = (newProgress * segmentLength) - segmentIndex;
 
@@ -646,6 +677,10 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         polylines: _allPolylines,
         myLocationEnabled: true,
         myLocationButtonEnabled: false,
+      ),
+      bottomNavigationBar: BottomNavBar(
+        selectedIndex: _selectedIndex,
+        onItemTapped: _onItemTapped,
       ),
     );
   }

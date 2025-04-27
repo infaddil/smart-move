@@ -161,21 +161,23 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
             "topK": 40
           }
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 15));
 
       debugPrint("Gemini response status: ${response.statusCode}");
       debugPrint("Gemini response body: ${response.body}");
 
       if (response.statusCode == 200) {
-        final responseData = jsonDecode(response.body);
-        final candidates = responseData['candidates'] ?? [];
-        if (candidates.isNotEmpty) {
-          return candidates[0]['content']['parts'][0]['text'] ??
-              "No response content from Gemini";
+        final data = jsonDecode(response.body);
+        final text = data['candidates']?[0]['content']['parts'][0]['text'] ??
+            "No response text found";
+
+        // Handle truncated responses
+        if (data['candidates']?[0]['finishReason'] == 'MAX_TOKENS') {
+          return "$text\n\n[Response truncated - ask more specifically]";
         }
-        return "No candidates returned from Gemini";
+        return text;
       } else {
-        throw Exception("API Error ${response.statusCode}: ${response.body}");
+        throw Exception("API Error ${response.statusCode}");
       }
     } catch (e) {
       debugPrint("Gemini API Error: $e");
@@ -183,7 +185,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     }
   }
   String _buildEnhancedPrompt(String query, List<Map<String, dynamic>> stops) {
-    // Format the stops information clearly
+    final limitedStops = stops.take(5).toList();
     final stopsInfo = stops.map((stop) {
       return """
     🚏 ${stop['name']}
@@ -220,38 +222,37 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
 
-    // Clear the input field immediately
+    // Clear input and update UI immediately
     _chatController.clear();
+    final newHistory = List<Map<String, String>>.from(_chatHistory)
+      ..add({"sender": "user", "message": query})
+      ..add({"sender": "ai", "message": "🔄 Analyzing..."});
 
-    // Add user message
-    setState(() {
-      _chatHistory.add({"sender": "user", "message": query});
-      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing..."});
-    });
+    setState(() => _chatHistory = newHistory);
 
     try {
       final stops = await _busDataService.getEnhancedBusStops();
-      if (stops.isEmpty) throw Exception('No bus stop data available');
+      if (stops.isEmpty) throw Exception('No bus stop data');
 
-      final prompt = _buildEnhancedPrompt(query, stops);
-      final response = await _callVertexAIPrediction(prompt);
+      final response = await _callVertexAIPrediction(
+        _buildEnhancedPrompt(query, stops),
+      );
 
+      // Ensure we remove the "Analyzing..." message
       setState(() {
-        // Remove the "Analyzing..." message
-        _chatHistory.removeLast();
-        // Add the actual response
-        _chatHistory.add({"sender": "ai", "message": response});
+        _chatHistory = List<Map<String, String>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing...")
+          ..add({"sender": "ai", "message": response});
       });
     } catch (e) {
       debugPrint("Chat error: $e");
       setState(() {
-        // Remove the "Analyzing..." message
-        _chatHistory.removeLast();
-        // Add error message
-        _chatHistory.add({
-          "sender": "ai",
-          "message": "⚠️ Sorry, I couldn't process your request. Please try again."
-        });
+        _chatHistory = List<Map<String, String>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing...")
+          ..add({
+            "sender": "ai",
+            "message": "⚠️ Error: ${e.toString().replaceAll('Exception: ', '')}"
+          });
       });
     }
   }
@@ -292,24 +293,40 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple),
                   ),
                   SizedBox(height: 12),
+                  if (_chatHistory.isNotEmpty &&
+                      _chatHistory.last["sender"] == "ai" &&
+                      _chatHistory.last["message"] == "🔄 Analyzing...")
+                    LinearProgressIndicator(minHeight: 2),
+
                   Expanded(
                     child: ListView.builder(
                       controller: scrollController,
                       itemCount: _chatHistory.length,
+                      // In your ListView.builder itemBuilder:
                       itemBuilder: (context, index) {
                         final chat = _chatHistory[index];
                         final isUser = chat["sender"] == "user";
+
+                        // Skip if message is empty (safety check)
+                        if (chat["message"]?.isEmpty ?? true) return SizedBox.shrink();
+
                         return Align(
                           alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                           child: Container(
+                            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
                             margin: EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            padding: EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: isUser ? Colors.purple[200] : Colors.grey[300],
-                              borderRadius: BorderRadius.circular(8),
+                              color: isUser ? Colors.purple[600] : Colors.grey[200],
+                              borderRadius: BorderRadius.only(
+                                topLeft: Radius.circular(isUser ? 12 : 0),
+                                topRight: Radius.circular(isUser ? 0 : 12),
+                                bottomLeft: Radius.circular(12),
+                                bottomRight: Radius.circular(12),
+                              ),
                             ),
                             child: Text(
-                              chat["message"] ?? "",
+                              chat["message"]!,
                               style: TextStyle(
                                 color: isUser ? Colors.white : Colors.black87,
                               ),

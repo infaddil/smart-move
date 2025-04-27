@@ -8,22 +8,21 @@ class BusDataService {
   Future<List<Map<String, dynamic>>> getEnhancedBusStops() async {
     // 1. Get basic stops
     final stopsSnapshot = await _firestore.collection('busStops').get();
-
+    final crowdSnap   = await _firestore.collection('crowd').get();
+    final crowd = { for (var d in crowdSnap.docs) d.id : (d['crowd'] as num).toInt() };
     // 2. Enhance with dynamic data
     return await Future.wait(stopsSnapshot.docs.map((doc) async {
       final stopData = doc.data();
+      final data = doc.data();
 
       // Get dynamic routes from 'route' collection
       final routes = await _getRoutesForStop(stopData['name']);
 
-      // Calculate ETA (we'll implement this separately)
-      final eta = await _calculateETA(stopData['location']);
-
       return {
         'name': stopData['name'],
         'location': stopData['location'],
-        'crowd': _random.nextInt(50) + 5,
-        'eta': eta ?? _random.nextInt(30) + 1, // Fallback
+        'crowd'   : crowd[data['name']] ?? 0,
+        'eta'     : await _calculateETA(data['location']) ?? Random().nextInt(30)+1,
         'routes': routes,
       };
     }));

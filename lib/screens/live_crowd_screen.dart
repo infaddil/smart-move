@@ -12,7 +12,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
   final LatLng? initialLocation;
-  LiveCrowdScreen({this.initialLocation});
+  final Map<String, dynamic>? busTrackerData;
+  LiveCrowdScreen({this.initialLocation, this.busTrackerData});
 
   @override
   _LiveCrowdScreenState createState() => _LiveCrowdScreenState();
@@ -27,6 +28,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   List<Map<String, dynamic>> _busStops = [];
   List<Map<String, dynamic>> _sortedStops = [];
   final BusDataService _busDataService = BusDataService();
+  Map<String, List<Map<String, dynamic>>> _activeBusSegments = {};
+  Map<String, String> _busAssignments = {};
 
   List<Map<String, String>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
@@ -45,6 +48,10 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     _loadBusStopsFromFirestore();
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
+    if (widget.busTrackerData != null) {
+      _activeBusSegments = widget.busTrackerData!['busSegments'] ?? {};
+      _busAssignments = widget.busTrackerData!['busAssignments'] ?? {};
+    }
 
     FirebaseAuth.instance.authStateChanges().listen((user) {
       setState(() {
@@ -118,20 +125,29 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   }
 
   void _loadBusStopsFromFirestore() async {
-    final random = Random();
-    final snapshot =
-    await FirebaseFirestore.instance.collection('busStops').get();
+    final snapshot = await FirebaseFirestore.instance.collection('busStops').get();
+
+    // Get the most recent crowd data from Firestore
+    final crowdSnapshot = await FirebaseFirestore.instance.collection('crowd').get();
+    final crowdData = {for (var doc in crowdSnapshot.docs) doc.id: doc['crowd'] as int};
+
     final stops = snapshot.docs.map((doc) {
       final data = doc.data();
       final GeoPoint geo = data['location'];
+      final stopName = data['name'] as String;
+
+      // Use the crowd data from Firestore if available, otherwise randomize
+      final crowdCount = crowdData[stopName] ?? Random().nextInt(50) + 5;
+
       return {
-        'name': data['name'],
+        'name': stopName,
         'location': LatLng(geo.latitude, geo.longitude),
-        // Simulated live crowd count between 5 and 54
-        'crowd': random.nextInt(50) + 5,
-        'eta': random.nextInt(60) + 1,
+        'crowd': crowdCount, // Use consistent crowd count
+        'eta': Random().nextInt(60) + 1,
+        'routes': List<String>.from(data['routes'] ?? []),
       };
     }).toList();
+
     setState(() {
       _busStops = stops;
       _sortedStops = List.from(stops)
@@ -148,16 +164,16 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       }
 
       final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-exp-03-25:generateContent?key=$apiKey'),
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-8b:generateContent?key=$apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "contents": [{
             "parts": [{"text": prompt}]
           }],
           "generationConfig": {
-            "temperature": 0.5,
+            "temperature": 1,
             "maxOutputTokens": 3100,
-            "topP": 0.8,
+            "topP": 0.95,
             "topK": 40
           }
         }),
@@ -186,12 +202,29 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   }
   String _buildEnhancedPrompt(String query, List<Map<String, dynamic>> stops) {
     final limitedStops = stops.take(5).toList();
+    String busInfo = "ACTIVE BUSES:\n";
+    _busAssignments.forEach((busId, busCode) {
+      final stopsForBus = _activeBusSegments[busId] ?? [];
+      busInfo += """
+  🚌 $busCode
+  - Current Stops: ${stopsForBus.map((s) => s['name']).join(' → ')}
+  - Next Stop: ${stopsForBus.isNotEmpty ? stopsForBus.first['name'] : 'None'}
+  
+  """;
+    });
+
     final stopsInfo = stops.map((stop) {
+      // Find which buses serve this stop
+      final servingBuses = _busAssignments.entries.where((entry) {
+        final busStops = _activeBusSegments[entry.key] ?? [];
+        return busStops.any((s) => s['name'] == stop['name']);
+      }).map((e) => e.value).toList();
+
       return """
     🚏 ${stop['name']}
     - 👥 Crowd: ${stop['crowd']} people
     - ⏱️ ETA: ${stop['eta']} minutes
-    - 🚌 Routes: ${stop['routes']?.join(', ') ?? 'None'}
+    - 🚌 Serving Buses: ${servingBuses.isNotEmpty ? servingBuses.join(', ') : 'None'}
     """;
     }).join('\n');
 
@@ -199,20 +232,23 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   You are SmartMove, an expert public transportation assistant in Malaysia. 
   Provide concise, actionable advice based on this real-time data:
 
+  $busInfo
+
   CURRENT BUS STOPS NEAR USER:
   $stopsInfo
 
   USER'S QUESTION: $query
 
   RESPONSE REQUIREMENTS:
-  1. Start with most relevant recommendation
-  2. Include specific stop names and route numbers
-  3. Mention crowd levels and ETAs
+  1. Start with most relevant recommendation including specific bus number
+  2. Include specific stop names and crowd levels
+  3. Mention ETAs and serving buses
   4. Keep response under 200 words
   5. Format clearly with emojis
+  6. Always show the same crowd numbers as displayed on the map
 
   EXAMPLE RESPONSE:
-  "🚍 Best option: Take Route BHEPA from Aman Damai (15 people, 5 min ETA). 
+  "🚍 Best option: Take Bus B2 from Aman Damai (15 people, 5 min ETA). 
   🚶 Alternative: Walk to BHEPA (10 min) if you want to avoid crowds."
 
   NOW ANSWER THE USER'S QUESTION:
@@ -224,15 +260,18 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
 
     // Clear input and update UI immediately
     _chatController.clear();
-    final newHistory = List<Map<String, String>>.from(_chatHistory)
-      ..add({"sender": "user", "message": query})
-      ..add({"sender": "ai", "message": "🔄 Analyzing..."});
+    setState(() {
+      _chatHistory.add({"sender": "user", "message": query});
+      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing..."});
+    });
 
-    setState(() => _chatHistory = newHistory);
 
     try {
-      final stops = await _busDataService.getEnhancedBusStops();
+      final stops = _busStops;
       if (stops.isEmpty) throw Exception('No bus stop data');
+      if (_busAssignments.isEmpty) {
+             throw Exception('LiveCrowd has no bus data – did you forget to pass it from BusTracker?');
+       }
 
       final response = await _callVertexAIPrediction(
         _buildEnhancedPrompt(query, stops),
@@ -445,6 +484,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
             }).toSet(),
             myLocationEnabled: true,
           ),
+
           Positioned(
             top: 20,
             left: 20,
@@ -482,6 +522,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
               ),
             ),
           ),
+
           Positioned(
             bottom: 20,
             left: 20,

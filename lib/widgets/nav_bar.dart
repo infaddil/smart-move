@@ -4,17 +4,25 @@ import 'package:smart_move/screens/live_crowd_screen.dart';
 import 'package:smart_move/screens/route_screen.dart';
 import 'package:smart_move/screens/alt_routes_screen.dart';
 import 'package:smart_move/screens/profile_screen.dart';
-
+import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class BottomNavBar extends StatefulWidget {
   final int selectedIndex;
   final Function(int) onItemTapped;
 
+  final LatLng? currentLatLng;
+  final Map<String, String>? busAssignments;
+  final Map<String, List<Map<String, dynamic>>>? busSegments;
+
   const BottomNavBar({
     required this.selectedIndex,
     required this.onItemTapped,
+    this.currentLatLng,
+    this.busAssignments,
+    this.busSegments,
   });
 
   @override
@@ -76,9 +84,15 @@ class _BottomNavBarState extends State<BottomNavBar> {
           if (role != 'driver') {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(
-                builder: (context) => LiveCrowdScreen(),
-              ),
+                MaterialPageRoute(
+                  builder: (_) => LiveCrowdScreen(
+                    initialLocation : widget.currentLatLng,        // ← fixed
+                    busTrackerData  : {
+                      'busAssignments' : widget.busAssignments,
+                      'busSegments'    : widget.busSegments,
+                    },
+                  ),
+                ),
             );
           } else if (role == 'driver') {
             Navigator.pushReplacement(

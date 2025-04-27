@@ -441,10 +441,10 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     final stopsSnap =
     await FirebaseFirestore.instance.collection('busStops').get();
     for (var doc in stopsSnap.docs) {
-       final geo = doc['location'] as GeoPoint;
-       final name = doc['name'] as String;           // 🔑 use the name
-       _stopLocations[name] = LatLng(geo.latitude, geo.longitude);
-     }
+      final geo = doc['location'] as GeoPoint;
+      final name = doc['name'] as String;           // 🔑 use the name
+      _stopLocations[name] = LatLng(geo.latitude, geo.longitude);
+    }
 
     // 3) Load crowd levels
     final crowdSnap =
@@ -471,11 +471,11 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     // pick a secondary for the third bus:
     final secondary = types[rnd.nextInt(types.length)];
 
-    _busAssignments = {
+    _busAssignments.addAll({
       'bus1': '${primary}1',
       'bus2': '${primary}2',
       'bus3': '${secondary}1',
-    };
+    });
   }
 
   Future<void> _buildMapElements() async {
@@ -656,8 +656,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   @override
   Widget build(BuildContext context) {
     final loaded =
-          _busAssignments.isNotEmpty
-          && _busSegments.length == _busAssignments.length;
+        _busAssignments.isNotEmpty
+            && _busSegments.length == _busAssignments.length;
     if (!loaded) {
       return Scaffold(
         appBar: AppBar(
@@ -669,7 +669,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     }
 
     final firstBusId = _busAssignments.keys.first;
-        final firstStops  = _busSegments[firstBusId]!;
+    final firstStops  = _busSegments[firstBusId]!;
     final center = firstStops.isNotEmpty
         ? firstStops.first['location'] as LatLng
         : LatLng (5.354792742851638, 100.30181627359067);
@@ -693,6 +693,9 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       bottomNavigationBar: BottomNavBar(
         selectedIndex: _selectedIndex,
         onItemTapped: _onItemTapped,
+        currentLatLng : center,
+        busAssignments: _busAssignments,
+        busSegments   : _busSegments,
       ),
     );
   }

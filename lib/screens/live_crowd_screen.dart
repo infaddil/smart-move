@@ -142,42 +142,24 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   // --------------------- VERTEX AI CALL (Returning Multiple Candidates) ----------------------------- //
   Future<String> _callVertexAIPrediction(String prompt) async {
     try {
-      final accessToken = await getGoogleAccessToken();
-      if (accessToken.isEmpty) {
-        throw Exception('No access token available');
-      }
-
-      const String project = "smart-move-455808";
-      const String region = "us-central1";
-      final String url = "https://$region-aiplatform.googleapis.com/v1/projects/$project/locations/$region/publishers/google/models/gemini-pro:predict";
-
-      debugPrint("Sending prompt to Gemini:\n$prompt");
-
-      final payload = {
-        "contents": [{
-          "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-          "temperature": 0.5,
-          "maxOutputTokens": 1000,
-          "topP": 0.8,
-          "topK": 40
-        }
-      };
-
-      final headers = {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer $accessToken",
-      };
       final apiKey = dotenv.env['GEMINI_API_KEY'];
+      if (apiKey == null || apiKey.isEmpty) {
+        throw Exception('No Gemini API key found');
+      }
 
       final response = await http.post(
         Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-exp-03-25:generateContent?key=$apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "contents": [{
-            "parts": [{"text": "Your prompt here"}]
-          }]
+            "parts": [{"text": prompt}]
+          }],
+          "generationConfig": {
+            "temperature": 0.5,
+            "maxOutputTokens": 3100,
+            "topP": 0.8,
+            "topK": 40
+          }
         }),
       ).timeout(const Duration(seconds: 30));
 
@@ -238,44 +220,37 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
 
+    // Clear the input field immediately
+    _chatController.clear();
+
+    // Add user message
     setState(() {
       _chatHistory.add({"sender": "user", "message": query});
-      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing real-time data..."});
+      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing..."});
     });
 
     try {
-      // 1. Get enhanced stop data
       final stops = await _busDataService.getEnhancedBusStops();
-      if (stops.isEmpty) {
-        throw Exception('No bus stop data available');
-      }
+      if (stops.isEmpty) throw Exception('No bus stop data available');
 
-      // 2. Build the prompt
       final prompt = _buildEnhancedPrompt(query, stops);
-      debugPrint("Final prompt:\n$prompt");
-
-      // 3. Get Gemini response
       final response = await _callVertexAIPrediction(prompt);
-      debugPrint("Raw Gemini response:\n$response");
 
-      // 4. Update UI
       setState(() {
+        // Remove the "Analyzing..." message
         _chatHistory.removeLast();
-        _chatHistory.add({
-          "sender": "ai",
-          "message": response.contains("Error") ?
-          "⚠️ $response" :
-          "🚍 SmartMove Advice:\n$response"
-        });
+        // Add the actual response
+        _chatHistory.add({"sender": "ai", "message": response});
       });
-
     } catch (e) {
       debugPrint("Chat error: $e");
       setState(() {
+        // Remove the "Analyzing..." message
         _chatHistory.removeLast();
+        // Add error message
         _chatHistory.add({
           "sender": "ai",
-          "message": "⚠️ Sorry, I couldn't process your request. Please try again later."
+          "message": "⚠️ Sorry, I couldn't process your request. Please try again."
         });
       });
     }
@@ -377,6 +352,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       },
     );
   }
+
 
   // ------------------------ LIVE DATA VISUAL ----------------------------------- //
   Widget _buildLiveDataVisual() {

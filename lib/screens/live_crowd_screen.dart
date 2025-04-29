@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_data_service.dart';
+import 'package:smart_move/screens/bus_route_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
@@ -124,35 +125,12 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     });
   }
 
-  void _loadBusStopsFromFirestore() async {
-    final snapshot = await FirebaseFirestore.instance.collection('busStops').get();
-
-
-    // Get the most recent crowd data from Firestore
-    final crowdSnapshot = await FirebaseFirestore.instance.collection('crowd').get();
-    final crowdData = {for (var doc in crowdSnapshot.docs) doc.id: doc['crowd'] as int};
-
-    final stops = snapshot.docs.map((doc) {
-      final data = doc.data();
-      final GeoPoint geo = data['location'];
-      final stopName = data['name'] as String;
-
-      // Use the crowd data from Firestore if available, otherwise randomize
-      final crowdCount = crowdData[stopName] ?? Random().nextInt(50) + 5;
-
-      return {
-        'name': stopName,
-        'location': LatLng(geo.latitude, geo.longitude),
-        'crowd': crowdCount, // Use consistent crowd count
-        'eta': Random().nextInt(60) + 1,
-        'routes': List<String>.from(data['routes'] ?? []),
-      };
-    }).toList();
-
+  Future<void> _loadBusStopsFromFirestore() async {
+    final stops = await BusRouteService().getAllStopsWithCrowd();
     setState(() {
-      _busStops = stops;
+      _busStops    = stops;
       _sortedStops = List.from(stops)
-        ..sort((a, b) => b['crowd'].compareTo(a['crowd']));
+        ..sort((a,b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
     });
   }
 

@@ -156,12 +156,12 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     for (var busId in _busAssignments.keys) {
       final code = _busAssignments[busId]!;
       final letter = code[0];
-      final data = await _svc.getAssignments(
+      final data = await BusRouteService().getAssignments(
         letter,
         capacity: 60,
         occupiedStops: occupiedStops,
       );
-
+      _busSegments[busId] = data['current']!;
       _busSegments[busId] = data['current']!;
 
       // Add these stops to the occupied list

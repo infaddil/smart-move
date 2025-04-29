@@ -270,8 +270,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       final stops = _busStops;
       if (stops.isEmpty) throw Exception('No bus stop data');
       if (_busAssignments.isEmpty) {
-             throw Exception('LiveCrowd has no bus data – did you forget to pass it from BusTracker?');
-       }
+        throw Exception('LiveCrowd has no bus data – did you forget to pass it from BusTracker?');
+      }
 
       final response = await _callVertexAIPrediction(
         _buildEnhancedPrompt(query, stops),

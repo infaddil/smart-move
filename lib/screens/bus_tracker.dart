@@ -349,7 +349,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       final baseDuration = (totalDistance / 5).clamp(100, 500).toInt();
       final duration = Duration(milliseconds: (baseDuration / speedModifier).toInt());
 
-      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) {
+      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) async{
         if (!mounted) {
           t.cancel();
           return;
@@ -375,6 +375,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
             start.latitude + (end.latitude - start.latitude) * segmentProgress,
             start.longitude + (end.longitude - start.longitude) * segmentProgress,
           );
+          await _updateBusActivity();
+          await _updateBusStops();
 
           setState(() {
             _busPositions[busId] = currentPos;
@@ -541,6 +543,39 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       default:
         return BitmapDescriptor.hueAzure;
     }
+  }
+  Future<void> _updateBusActivity() async {
+    for (var busId in _busAssignments.keys) {
+      final code = _busAssignments[busId]!;
+      final letter = code[0];
+      final stops = _busSegments[busId]?.map((s) => s['name'] as String).toList() ?? [];
+
+      await FirebaseFirestore.instance.collection('busActivity').doc(busId).set({
+        'busCode': code,
+        'routeType': letter,
+        'stops': stops,
+        'currentPosition': GeoPoint(
+          _busPositions[busId]!.latitude,
+          _busPositions[busId]!.longitude,
+        ),
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'isActive': true,
+      });
+    }
+  }
+
+  Future<void> _updateBusStops() async {
+    final batch = FirebaseFirestore.instance.batch();
+
+    _crowdLevels.forEach((stopName, crowd) {
+      final stopRef = FirebaseFirestore.instance.collection('busStops').doc(stopName);
+      batch.update(stopRef, {
+        'crowd': crowd,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      });
+    });
+
+    await batch.commit();
   }
   Set<Marker> get _allMarkers {
     final markers = <Marker>{};

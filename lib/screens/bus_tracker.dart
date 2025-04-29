@@ -7,7 +7,7 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 
@@ -144,14 +144,16 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   Future<void> _initializeAllBuses() async {
     final types = ['A','B','C'];
     final rnd = Random();
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString('busSession');
     final primary = types.removeAt(rnd.nextInt(3));
     final secondary = types[rnd.nextInt(2)];
     _busAssignments['bus1'] = primary + '1';
     _busAssignments['bus2'] = primary + '2';
     _busAssignments['bus3'] = secondary + '1';
 
-    // Track stops that are already assigned to other buses
     final occupiedStops = <String>[];
+
 
     for (var busId in _busAssignments.keys) {
       final code = _busAssignments[busId]!;

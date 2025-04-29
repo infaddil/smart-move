@@ -126,34 +126,28 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
 
   void _loadBusStopsFromFirestore() async {
     final snapshot = await FirebaseFirestore.instance.collection('busStops').get();
-    final activitySnapshot = await FirebaseFirestore.instance.collection('busActivity').get();
 
-    final stops = activitySnapshot.docs.map((doc) {
+
+    // Get the most recent crowd data from Firestore
+    final crowdSnapshot = await FirebaseFirestore.instance.collection('crowd').get();
+    final crowdData = {for (var doc in crowdSnapshot.docs) doc.id: doc['crowd'] as int};
+
+    final stops = snapshot.docs.map((doc) {
       final data = doc.data();
       final GeoPoint geo = data['location'];
       final stopName = data['name'] as String;
 
+      // Use the crowd data from Firestore if available, otherwise randomize
+      final crowdCount = crowdData[stopName] ?? Random().nextInt(50) + 5;
+
       return {
         'name': stopName,
         'location': LatLng(geo.latitude, geo.longitude),
-        'crowd': Random().nextInt(15) + 1, // Use consistent crowd count
+        'crowd': crowdCount, // Use consistent crowd count
         'eta': Random().nextInt(60) + 1,
         'routes': List<String>.from(data['routes'] ?? []),
       };
     }).toList();
-    _busAssignments = {};
-    _activeBusSegments = {};
-
-    for (var doc in activitySnapshot.docs) {
-      final data = doc.data();
-      if (data['isActive'] == true) {
-        _busAssignments[doc.id] = data['busCode'];
-        _activeBusSegments[doc.id] = (data['stops'] as List).map((stop) => {
-          'name': stop,
-          'location': _busStops.firstWhere((s) => s['name'] == stop)['location'],
-        }).toList();
-      }
-    }
 
     setState(() {
       _busStops = stops;

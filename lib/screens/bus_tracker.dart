@@ -375,7 +375,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
             start.latitude + (end.latitude - start.latitude) * segmentProgress,
             start.longitude + (end.longitude - start.longitude) * segmentProgress,
           );
-          await _updateBusActivity();
           await _updateBusStops();
 
           setState(() {
@@ -542,25 +541,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         return BitmapDescriptor.hueRose;
       default:
         return BitmapDescriptor.hueAzure;
-    }
-  }
-  Future<void> _updateBusActivity() async {
-    for (var busId in _busAssignments.keys) {
-      final code = _busAssignments[busId]!;
-      final letter = code[0];
-      final stops = _busSegments[busId]?.map((s) => s['name'] as String).toList() ?? [];
-
-      await FirebaseFirestore.instance.collection('busActivity').doc(busId).set({
-        'busCode': code,
-        'routeType': letter,
-        'stops': stops,
-        'currentPosition': GeoPoint(
-          _busPositions[busId]!.latitude,
-          _busPositions[busId]!.longitude,
-        ),
-        'lastUpdated': FieldValue.serverTimestamp(),
-        'isActive': true,
-      });
     }
   }
 

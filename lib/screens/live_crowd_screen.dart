@@ -5,7 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
-import 'package:smart_move/widgets/nav_bar.dart';
+import 'package:smart_move/widgets/nav_bar.dart'; // Assuming nav_bar.dart exists
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_data_service.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
@@ -14,11 +14,12 @@ import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:math';
 
 class LiveCrowdScreen extends StatefulWidget {
   final LatLng? initialLocation;
   final Map<String, dynamic>? busTrackerData;
-  LiveCrowdScreen({this.initialLocation, this.busTrackerData});
+  LiveCrowdScreen({super.key, this.initialLocation, this.busTrackerData});
 
   @override
   _LiveCrowdScreenState createState() => _LiveCrowdScreenState();
@@ -41,6 +42,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   bool _isRecording = false;
   String? _audioPath;
   ScrollController? _sheetScrollController;
+  bool _isBusyRecording = false;
+  bool _isMicButtonPressed = false;
 
   List<Map<String,dynamic>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
@@ -60,8 +63,38 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
     if (widget.busTrackerData != null) {
-      _activeBusSegments = widget.busTrackerData!['busSegments'] ?? {};
-      _busAssignments = widget.busTrackerData!['busAssignments'] ?? {};
+      // Use type checking and provide defaults
+      var segments = widget.busTrackerData!['busSegments'];
+      if (segments is Map) {
+        // Ensure keys are String and values are List<Map<String, dynamic>>
+        _activeBusSegments = Map<String, List<Map<String, dynamic>>>.fromEntries(
+            segments.entries.where((entry) => entry.value is List).map((entry) {
+              // Ensure inner list contains Maps
+              var list = List<Map<String, dynamic>>.from(
+                  (entry.value as List).where((item) => item is Map).map((item) => Map<String, dynamic>.from(item as Map))
+              );
+              return MapEntry(entry.key.toString(), list);
+            })
+        );
+      } else {
+        _activeBusSegments = {}; // Default to empty if type is wrong
+        debugPrint("Warning: busTrackerData['busSegments'] was not a Map.");
+      }
+      var assignments = widget.busTrackerData!['busAssignments'];
+      if (assignments is Map) {
+        // Ensure keys and values are Strings
+        _busAssignments = Map<String, String>.fromEntries(
+            assignments.entries.map((entry) => MapEntry(entry.key.toString(), entry.value.toString()))
+        );
+      } else {
+        _busAssignments = {}; // Default to empty if type is wrong
+        debugPrint("Warning: busTrackerData['busAssignments'] was not a Map.");
+      }
+      debugPrint("Initialized with busAssignments: $_busAssignments");
+      debugPrint("Initialized with activeBusSegments: $_activeBusSegments");
+    } else {
+      debugPrint("Warning: busTrackerData was null when initializing LiveCrowdScreen.");
+      // Keep them as empty maps initialized above
     }
 
     FirebaseAuth.instance.authStateChanges().listen((user) {
@@ -154,33 +187,340 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       });
     });
   }
-  Future<void> _toggleRecording() async {
-    if (!_isRecording) {
-      if (await _recorder.hasPermission()) {
-        final dir      = await getTemporaryDirectory();
-        final filePath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.m4a';
+  String _buildEnhancedAudioPrompt(
+      String baseInstruction, // e.g., "Analyze this audio..."
+      List<Map<String, dynamic>> stops,
+      Map<String, String> busAssignments,
+      Map<String, List<Map<String, dynamic>>> activeBusSegments) {
 
-        // ← Pass RecordConfig() first, then path:
-        await _recorder.start(
-          RecordConfig(
-            encoder: AudioEncoder.aacLc,  // default AAC-LC
-            bitRate: 128000,
-            sampleRate: 44100,
-          ),
-          path: filePath,                 // where to save
-        );
-        setState(() => _isRecording = true);
-      }
-    } else {
-      final recordedPath = await _recorder.stop();
+    // Reuse the logic from _buildEnhancedPrompt to format bus/stop data
+    String busInfo = "ACTIVE BUSES:\n";
+    // Add null check just in case
+    (busAssignments ?? {}).forEach((busId, busCode) {
+      final stopsForBus = (activeBusSegments ?? {})[busId] ?? [];
+      busInfo += """
+    🚌 $busCode
+    - Current Stops: ${stopsForBus.map((s) => s['name'] ?? 'Unknown Stop').join(' → ')}
+    - Next Stop: ${stopsForBus.isNotEmpty ? (stopsForBus.first['name'] ?? 'Unknown Stop') : 'None'}
+
+    """;
+    });
+
+    final stopsInfo = (stops ?? []).map((stop) {
+      // Find which buses serve this stop
+      final servingBuses = (busAssignments ?? {}).entries.where((entry) {
+        final busStops = (activeBusSegments ?? {})[entry.key] ?? [];
+        return busStops.any((s) => s['name'] == stop['name']);
+      }).map((e) => e.value).toList();
+
+      return """
+      🚏 ${stop['name'] ?? 'Unknown Stop'}
+      - 👥 Crowd: ${stop['crowd'] ?? '?'} people
+      - ⏱️ ETA: ${stop['eta'] ?? '?'} minutes
+      - 🚌 Serving Buses: ${servingBuses.isNotEmpty ? servingBuses.join(', ') : 'None'}
+      """;
+    }).join('\n');
+
+    // Combine base instruction with context
+    return """
+    You are SmartMove, an expert public transportation assistant in Gelugor, Penang, Malaysia.
+    Listen to the following audio and provide concise, actionable advice based on the audio content AND this real-time data:
+
+    $busInfo
+
+    CURRENT BUS STOPS NEAR USER:
+    $stopsInfo
+
+    USER'S AUDIO CONTENT ANALYSIS INSTRUCTION: $baseInstruction
+
+    RESPONSE REQUIREMENTS:
+    1. First, understand the user's need from the audio.
+    2. Then, provide the most relevant recommendation using the real-time data (include specific bus number/code).
+    3. Include specific stop names and crowd levels from the data provided above.
+    4. Mention ETAs and serving buses from the data.
+    5. Keep response concise and clear.
+    6. Format clearly with emojis if appropriate.
+    7. Use the crowd numbers, ETAs, and bus assignments exactly as provided in the data context above.
+
+    NOW ANALYZE THE AUDIO AND ANSWER BASED ON THE CONTEXT:
+    """;
+  }
+
+  // NEW Function: Starts recording
+  Future<void> _startRecording() async {
+    if (_isBusyRecording) return; // Already busy with another operation
+
+    setState(() {
+      _isBusyRecording = true;
+      _isMicButtonPressed = true; // Visually indicate press
+    });
+
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      debugPrint("Microphone permission not granted.");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Microphone permission required.")),
+      );
       setState(() {
-        _isRecording = false;
-        if (recordedPath != null) {
+        _isBusyRecording = false;
+        _isMicButtonPressed = false; // Reset press state
+      });
+      return;
+    }
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final filePath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.m4a';
+      debugPrint("Attempting to start recording to: $filePath");
+
+      await _recorder.start(
+        RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          sampleRate: 44100,
+        ),
+        path: filePath,
+      );
+
+      // Check if recording actually started
+      final isActuallyRecording = await _recorder.isRecording();
+      if (!isActuallyRecording) {
+        throw Exception("Recorder failed to enter recording state.");
+      }
+      debugPrint("Recording started successfully.");
+      // No need to set _isRecording flag anymore, press state handles it
+
+    } catch (e) {
+      debugPrint("Error starting recording: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error starting recording: ${e.toString()}")),
+      );
+      // Reset state on error
+      setState(() {
+        _isMicButtonPressed = false;
+      });
+    } finally {
+      // Only mark as not busy if start failed immediately, otherwise stop will handle it
+      final isActuallyRecording = await _recorder.isRecording();
+      if(!isActuallyRecording) {
+        setState(() => _isBusyRecording = false);
+      }
+    }
+  }
+
+  // CORRECTED Function: Stops recording and sends to chat
+  // --- MODIFIED METHOD: Stops recording and sends to Gemini ---
+  Future<void> _stopAndSendRecording() async {
+    // Only proceed if we were actually recording (button was pressed)
+    // and not already busy stopping.
+    if (!_isBusyRecording || !_isMicButtonPressed) {
+      setState(() {
+        _isMicButtonPressed = false; // Ensure visual state is reset
+        // Try to stop recording if it got stuck somehow
+        _recorder.isRecording().then((isRec) {
+          if (isRec) {
+            debugPrint("Stop called without active press, but recorder was recording. Stopping now.");
+            _recorder.stop().catchError((e) => debugPrint("Error stopping dangling recording: $e"));
+          }
+        });
+      });
+      if (!_isBusyRecording) return;
+    }
+
+    // Reset button press state immediately for visual feedback only if it was pressed
+    if (_isMicButtonPressed) {
+      setState(() {
+        _isMicButtonPressed = false;
+      });
+    }
+
+    String? recordedPath; // Variable to hold the path
+
+    try {
+      debugPrint("Attempting to stop recording...");
+      recordedPath = await _recorder.stop(); // Wait for stop to complete
+      debugPrint("Recording stopped. Path: $recordedPath");
+
+      if (recordedPath != null && recordedPath.isNotEmpty) {
+        // Add a placeholder to the UI immediately for the audio message itself
+        // This is separate from the "Analyzing..." message added by the send function
+        setState(() {
           _chatHistory.add({
-            "type": "audio",
-            "content": recordedPath,
+            "type": "audio", // Keep type for potential UI rendering
+            "sender": "user", // Audio is from the user
+            "content": recordedPath, // Store path for reference
+            "message": "🎤 Your recorded audio" // Display text for the audio message
           });
+        });
+        debugPrint("Audio added to chat history UI: $recordedPath");
+
+        // --- >>> CALL THE NEW FUNCTION TO SEND AUDIO TO GEMINI <<< ---
+        // Define the prompt you want to send *with* the audio.
+        // You could also get this from a text field if you want users
+        // to type a question *about* the audio.
+        String audioInstruction = "Understand the user's request in this audio about public transport in USM, Penang.";
+
+        // Trigger the API call (this will handle adding "Analyzing..." and the final response)
+        _sendAudioQueryToGemini(
+            recordedPath,
+            audioInstruction,
+            _busStops, // Pass current nearby stops
+            _busAssignments, // Pass current bus assignments
+            _activeBusSegments // Pass current bus segments/locations
+        );
+
+        // --- <<< END OF NEW CALL <<< ---
+
+      } else {
+        debugPrint("Stop recording returned null or empty path. Recording might have been too short or failed.");
+        if (mounted) { // Check if widget is still in the tree
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Failed to record audio. Try holding longer.")),
+          );
         }
+      }
+    } catch (e) {
+      debugPrint("Error stopping/processing recording: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error processing recording: ${e.toString()}")),
+        );
+      }
+      // Ensure mic button visual state is reset on error too
+      setState(() { _isMicButtonPressed = false; });
+    } finally {
+      // Recording attempt finished (successfully or with error), mark as not busy
+      setState(() {
+        _isBusyRecording = false;
+      });
+    }
+  } // End of _stopAndSendRecording
+  // --- NEW METHOD: Sends Audio + Prompt to Gemini ---
+  Future<void> _sendAudioQueryToGemini(String audioPath,
+      String baseInstruction,
+      // Add parameters for context data
+      List<Map<String, dynamic>> currentStops,
+      Map<String, String> currentBusAssignments,
+      Map<String, List<Map<String, dynamic>>> currentActiveBusSegments) async {
+    // --- Safety check for audio path ---
+    if (audioPath.isEmpty) {
+      debugPrint("Error: Audio path is empty.");
+      // Update chat history with error
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing audio...")
+          ..add({"sender": "ai", "message": "⚠️ Error: Could not find recorded audio file."});
+      });
+      return;
+    }
+
+    // --- Get API Key ---
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    if (apiKey == null || apiKey.isEmpty) {
+      debugPrint('Error: No Gemini API key found');
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing audio...")
+          ..add({"sender": "ai", "message": "⚠️ Error: API Key not configured."});
+      });
+      return;
+    }
+
+    // --- Prepare for API Call ---
+    // Update UI to show analysis is in progress
+    setState(() {
+      // Add a placeholder message that we'll replace later
+      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing audio..."});
+    });
+
+
+    try {
+      // --- Read and Encode Audio File ---
+      final audioFile = File(audioPath);
+      if (!await audioFile.exists()) {
+        throw Exception("Audio file does not exist at path: $audioPath");
+      }
+      final audioBytes = await audioFile.readAsBytes();
+      final base64Audio = base64Encode(audioBytes);
+      final mimeType = "audio/m4a";
+      final fullPrompt = _buildEnhancedAudioPrompt(
+          baseInstruction,
+          currentStops,
+          currentBusAssignments,
+          currentActiveBusSegments
+      );
+      debugPrint("--- Sending Audio Prompt to AI ---");
+      debugPrint(fullPrompt);
+
+
+      final requestBody = jsonEncode({
+        "contents": [
+          {
+            "parts": [
+              {"text": fullPrompt}, // The text prompt accompanying the audio
+              {
+                "inlineData": {
+                  "mimeType": mimeType,
+                  "data": base64Audio // The Base64 encoded audio data
+                }
+              }
+            ]
+          }
+        ],
+        // Optional: Add generationConfig if needed, similar to your text call
+        "generationConfig": {
+          "temperature": 0.7, // Example config
+          "maxOutputTokens": 1024, // Example config
+        }
+      });
+
+      // --- Make the API Call ---
+      // Use a model that explicitly supports multimodal input (audio+text)
+      // e.g., 'gemini-1.5-flash-latest' or 'gemini-1.5-pro-latest'
+      // Update the URL if necessary based on documentation.
+      final response = await http.post(
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: requestBody,
+      ).timeout(const Duration(seconds: 90)); // Increased timeout for audio
+
+      debugPrint("Gemini Audio response status: ${response.statusCode}");
+      debugPrint("Gemini Audio response body: ${response.body.substring(0, min(response.body.length, 500))}...");
+
+      String messageText;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        // Extract text response
+        messageText = data['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? "Could not extract response text.";
+        if (data['candidates'] == null || data['candidates'].isEmpty) {
+          final blockReason = data['promptFeedback']?['blockReason'];
+          messageText = blockReason != null ? "⚠️ Response blocked: $blockReason" : "⚠️ Received an empty response from the AI.";
+        } else if (data['candidates']?[0]?['finishReason'] == 'MAX_TOKENS') {
+          messageText += "\n\n[Response may be truncated]";
+        }
+      } else {
+        String errorDetail = response.body;
+        try {
+          final errorJson = jsonDecode(response.body);
+          errorDetail = errorJson['error']?['message'] ?? response.body;
+        } catch (_) {}
+        messageText = "⚠️ API Error ${response.statusCode}: $errorDetail";
+      }
+
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing audio...")
+          ..add({"sender": "ai", "message": messageText});
+      });
+
+
+    } catch (e) {
+      debugPrint("Error sending audio query: $e");
+      // Update chat history with error, replacing "Analyzing..."
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing audio...")
+          ..add({"sender": "ai", "message": "⚠️ Error processing audio: ${e.toString()}"});
       });
     }
   }
@@ -230,7 +570,13 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       return "Error getting response: ${e.toString()}";
     }
   }
-  String _buildEnhancedPrompt(String query, List<Map<String, dynamic>> stops) {
+  String _buildEnhancedPrompt(
+      String query,
+      List<Map<String, dynamic>> stops,
+      // Add the missing parameters here:
+      Map<String, String> busAssignments,
+      Map<String, List<Map<String, dynamic>>> activeBusSegments
+      ) {
     final limitedStops = stops.take(5).toList();
     String busInfo = "ACTIVE BUSES:\n";
     _busAssignments.forEach((busId, busCode) {
@@ -298,18 +644,20 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
 
     try {
       final stops = _busStops;
+      final assignments = _busAssignments;
+      final segments = _activeBusSegments;
       if (stops.isEmpty) throw Exception('No bus stop data');
-      if (_busAssignments.isEmpty) {
-        throw Exception('LiveCrowd has no bus data – did you forget to pass it from BusTracker?');
+      if (assignments.isEmpty) {
+        debugPrint('Bus assignment data is empty. Check data passing from BusTracker.');
+        throw Exception('LiveCrowd has no bus assignment data – did you forget to pass it or is it empty?');
       }
+      final enhancedPrompt = _buildEnhancedPrompt(query, stops, assignments, segments);
 
-      final response = await _callVertexAIPrediction(
-        _buildEnhancedPrompt(query, stops),
-      );
-
+      final response = await _callVertexAIPrediction(enhancedPrompt);
       // Ensure we remove the "Analyzing..." message
       setState(() {
-        _chatHistory = List<Map<String, String>>.from(_chatHistory)
+        // Use the CORRECT type Map<String, dynamic> here
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
           ..removeWhere((msg) => msg["message"] == "🔄 Analyzing...")
           ..add({"sender": "ai", "message": response});
       });
@@ -427,19 +775,35 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                   ),
                   SizedBox(height: 10),
                   _buildLiveDataVisual(),
+                  // Near the bottom of the _showChatModal Column's children:
                   Padding(
                     padding: EdgeInsets.only(bottom: 10, top: 8, left: 8, right: 8),
                     child: Row(
                       children: [
-                        IconButton(
+                        IconButton( // Keep the image button
                           icon: Icon(Icons.image),
                           onPressed: _pickImage,
                         ),
-                        IconButton(
-                          icon: Icon(_isRecording ? Icons.mic_off : Icons.mic),
-                          onPressed: _toggleRecording,
+
+                        // REPLACE the mic IconButton with this GestureDetector:
+                        GestureDetector(
+                          onLongPressStart: (_) => _startRecording(), // Start on press down
+                          onLongPressEnd: (_) => _stopAndSendRecording(), // Stop on release
+                          child: Container( // Wrap Icon in Container for visual feedback
+                            padding: EdgeInsets.all(8.0), // Similar padding to IconButton
+                            decoration: BoxDecoration(
+                              color: _isMicButtonPressed ? Colors.red[100] : Colors.transparent, // Highlight when pressed
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.mic, // Keep the mic icon
+                              color: _isMicButtonPressed ? Colors.red : Theme.of(context).iconTheme.color, // Change color when pressed
+                            ),
+                          ),
                         ),
-                        Expanded(
+                        // END of GestureDetector replacement
+
+                        Expanded( // Keep the TextField
                           child: TextField(
                             controller: _chatController,
                             decoration: InputDecoration(
@@ -450,7 +814,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                           ),
                         ),
                         SizedBox(width: 8),
-                        ElevatedButton(
+                        ElevatedButton( // Keep the Send button
                           onPressed: () => _sendUserQuery(_chatController.text),
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
                           child: Icon(Icons.send, color: Colors.white),

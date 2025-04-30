@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'dart:math';
+import 'package:path_provider/path_provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 import 'package:smart_move/widgets/nav_bar.dart';
@@ -10,6 +10,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_data_service.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
+import 'package:record/record.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class LiveCrowdScreen extends StatefulWidget {
   final LatLng? initialLocation;
@@ -31,8 +35,14 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   final BusDataService _busDataService = BusDataService();
   Map<String, List<Map<String, dynamic>>> _activeBusSegments = {};
   Map<String, String> _busAssignments = {};
+  File? _pickedImage;
+  final _picker = ImagePicker();
+  final _recorder = AudioRecorder();
+  bool _isRecording = false;
+  String? _audioPath;
+  ScrollController? _sheetScrollController;
 
-  List<Map<String, String>> _chatHistory = [];
+  List<Map<String,dynamic>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
   List<String> _lastCandidates = [];
@@ -132,6 +142,47 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       _sortedStops = List.from(stops)
         ..sort((a,b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
     });
+  }
+  Future<void> _pickImage() async {
+    final XFile? file = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+    if (file == null) return;
+    setState(() {
+      _pickedImage = File(file.path);
+      _chatHistory.add({
+        "type": "image",
+        "content": file.path,
+      });
+    });
+  }
+  Future<void> _toggleRecording() async {
+    if (!_isRecording) {
+      if (await _recorder.hasPermission()) {
+        final dir      = await getTemporaryDirectory();
+        final filePath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+        // ← Pass RecordConfig() first, then path:
+        await _recorder.start(
+          RecordConfig(
+            encoder: AudioEncoder.aacLc,  // default AAC-LC
+            bitRate: 128000,
+            sampleRate: 44100,
+          ),
+          path: filePath,                 // where to save
+        );
+        setState(() => _isRecording = true);
+      }
+    } else {
+      final recordedPath = await _recorder.stop();
+      setState(() {
+        _isRecording = false;
+        if (recordedPath != null) {
+          _chatHistory.add({
+            "type": "audio",
+            "content": recordedPath,
+          });
+        }
+      });
+    }
   }
 
   // --------------------- VERTEX AI CALL (Returning Multiple Candidates) ----------------------------- //
@@ -274,6 +325,12 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       });
     }
   }
+  @override
+  void dispose() {
+    _recorder.dispose();
+    super.dispose();
+  }
+
   // --------------------- WHEN THE USER SENDS A QUERY ------------------------ //
 
   // ------------------- BOTTOM SHEET CHAT UI (with improved keyboard handling) ------------------------------- //
@@ -294,6 +351,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
             minChildSize: 0.4,
             maxChildSize: 0.9,
             builder: (context, scrollController) {
+              _sheetScrollController = scrollController;
               return Column(
                 children: [
                   Container(
@@ -320,14 +378,27 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                     child: ListView.builder(
                       controller: scrollController,
                       itemCount: _chatHistory.length,
-                      // In your ListView.builder itemBuilder:
                       itemBuilder: (context, index) {
                         final chat = _chatHistory[index];
                         final isUser = chat["sender"] == "user";
 
                         // Skip if message is empty (safety check)
                         if (chat["message"]?.isEmpty ?? true) return SizedBox.shrink();
-
+                        if (chat["type"] == "image") {
+                        return Image.file(File(chat["content"]));
+                        }
+                        if (chat["type"] == "audio") {
+                        return Row(
+                        children: [
+                          IconButton(
+                          icon: Icon(Icons.play_arrow),
+                          onPressed: () {
+                          },
+                          ),
+                          Text("Voice message"),
+                        ],
+                          );
+                        }
                         return Align(
                           alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                           child: Container(
@@ -360,6 +431,14 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
                     padding: EdgeInsets.only(bottom: 10, top: 8, left: 8, right: 8),
                     child: Row(
                       children: [
+                        IconButton(
+                          icon: Icon(Icons.image),
+                          onPressed: _pickImage,
+                        ),
+                        IconButton(
+                          icon: Icon(_isRecording ? Icons.mic_off : Icons.mic),
+                          onPressed: _toggleRecording,
+                        ),
                         Expanded(
                           child: TextField(
                             controller: _chatController,

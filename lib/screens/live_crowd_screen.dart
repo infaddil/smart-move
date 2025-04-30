@@ -176,17 +176,267 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
         ..sort((a,b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
     });
   }
+
   Future<void> _pickImage() async {
-    final XFile? file = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (file == null) return;
-    setState(() {
-      _pickedImage = File(file.path);
-      _chatHistory.add({
-        "type": "image",
-        "content": file.path,
+    try {
+      final XFile? file = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70); // Using gallery for example
+      if (file == null) {
+        debugPrint("Image picking cancelled by user.");
+        return; // User cancelled picker
+      }
+
+      final imageFile = File(file.path);
+      final imagePath = file.path; // Get the path
+
+      // Add image preview to chat history
+      setState(() {
+        // It's generally better not to store the whole File object in state if
+        // not needed long-term. Path is usually sufficient.
+        // _pickedImage = imageFile; // Only store if needed elsewhere
+
+        _chatHistory.add({
+          "type": "image", // For UI rendering
+          "sender": "user",
+          "content": imagePath, // Store path for display
+          "message": "🖼️ Image selected (asking AI...)" // Placeholder text
+        });
       });
-    });
+
+      // --- >>> THIS IS THE CRUCIAL PART THAT WAS MISSING <<< ---
+      // Define the base instruction for the AI regarding the image
+      // Use the complex prompt from the previous step asking it to find nearby stops
+      String imageInstruction = "Identify the location/landmark/building shown in this image (likely within USM, Penang). If it's one of the known bus stops provided in the context, give directions to it. If it's NOT a known bus stop, identify the CLOSEST known bus stop from the context list and recommend going there to reach the location in the image. Provide bus details for the recommended stop.";
+
+      // Trigger the API call with the image path, instruction, and context
+      _sendImageQueryToGemini(
+          imagePath, // Pass the image path
+          imageInstruction,
+          _busStops, // Pass current nearby stops
+          _busAssignments, // Pass current bus assignments
+          _activeBusSegments // Pass current bus segments/locations
+      );
+      // --- <<< END OF MISSING CALL <<< ---
+
+    } catch (e) {
+      debugPrint("Error picking or processing image: $e");
+      if (mounted) { // Check if mounted before showing Snackbar
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error picking image: ${e.toString()}")),
+        );
+      }
+      // Optionally add an error message to chat history
+      setState(() {
+        _chatHistory.add({
+          "sender": "ai",
+          "message": "⚠️ Error handling image."
+        });
+      });
+    }
   }
+  String _buildEnhancedImagePrompt(
+      String baseInstruction, // e.g., "How do I get to the place in this image?"
+      List<Map<String, dynamic>> stops,
+      Map<String, String> busAssignments,
+      Map<String, List<Map<String, dynamic>>> activeBusSegments) {
+
+    // Format bus and stop data (same as before)
+    String busInfo = "ACTIVE BUSES:\n";
+    (busAssignments ?? {}).forEach((busId, busCode) {
+      final stopsForBus = (activeBusSegments ?? {})[busId] ?? [];
+      busInfo += """
+  🚌 $busCode
+  - Current Stops: ${stopsForBus.map((s) => s['name'] ?? 'Unknown').join(' → ')}
+  - Next Stop: ${stopsForBus.isNotEmpty ? (stopsForBus.first['name'] ?? 'Unknown') : 'None'}
+
+  """;
+    });
+
+    // Create a simple list of known stop names for the AI to check against
+    final knownStopNames = (stops ?? []).map((s) => s['name'] ?? 'Unknown').toSet();
+
+    final stopsInfo = (stops ?? []).map((stop) {
+      final servingBuses = (busAssignments ?? {}).entries.where((entry) {
+        final busStops = (activeBusSegments ?? {})[entry.key] ?? [];
+        return busStops.any((s) => s['name'] == stop['name']);
+      }).map((e) => e.value).toList();
+
+      return """
+    🚏 ${stop['name'] ?? 'Unknown'}
+    - 👥 Crowd: ${stop['crowd'] ?? '?'} people
+    - ⏱️ ETA: ${stop['eta'] ?? '?'} minutes
+    - 🚌 Serving Buses: ${servingBuses.isNotEmpty ? servingBuses.join(', ') : 'None'}
+    """;
+    }).join('\n');
+
+    // Combine base instruction with context AND the nearby logic request
+    return """
+  You are SmartMove, an expert public transportation assistant in Gelugor, Penang, Malaysia (specifically near USM).
+  Analyze the provided image AND use the following real-time bus data context to answer the user's request.
+
+  CONTEXT DATA:
+  $busInfo
+
+  LIST OF KNOWN BUS STOPS NEAR USER:
+  ${knownStopNames.join(', ')}
+
+  DETAILED INFO ON KNOWN BUS STOPS NEAR USER:
+  $stopsInfo
+
+  USER'S INSTRUCTION BASED ON IMAGE: $baseInstruction
+
+  RESPONSE REQUIREMENTS & LOGIC:
+  1. First, carefully identify the primary location, landmark, or building shown in the image. Let's call this the 'Image Location'. State clearly what you identified (e.g., "The image shows DK B").
+  2. **Check if the identified 'Image Location' name exactly matches one of the names in the 'LIST OF KNOWN BUS STOPS NEAR USER' provided above.**
+  3. **If it MATCHES a known bus stop name:** Provide directions directly to that bus stop using the real-time context data (ETA, crowd, serving buses from the 'DETAILED INFO' section).
+  4. **If it DOES NOT MATCH a known bus stop name:**
+      a. State that the 'Image Location' (e.g., DK B) is not a listed bus stop.
+      b. **THEN, try to determine which bus stop from the 'LIST OF KNOWN BUS STOPS NEAR USER' is geographically closest to the identified 'Image Location' based on your general knowledge of USM/Penang geography.**
+      c. Recommend the user travel to that *closest known bus stop* to reach the 'Image Location'. Mention the closest stop's name and provide its details (ETA, crowd, serving buses) from the 'DETAILED INFO' section. Example: "The image shows DK B, which isn't a listed bus stop. It seems closest to the DK A bus stop. To get near DK B, you can take Bus A1 to DK A (Crowd: ..., ETA: ...)."
+  5. If the location cannot be reliably identified at all, or you cannot determine a nearby known bus stop, state that clearly.
+  6. Keep response concise and clear. Format clearly with emojis.
+
+  NOW ANALYZE THE IMAGE AND FOLLOW THE LOGIC ABOVE:
+  """;
+  }
+  Future<void> _sendImageQueryToGemini(
+      String imagePath,
+      String baseInstruction,
+      List<Map<String, dynamic>> currentStops,
+      Map<String, String> currentBusAssignments,
+      Map<String, List<Map<String, dynamic>>> currentActiveBusSegments
+      ) async {
+
+    // Safety check
+    if (imagePath.isEmpty) {
+      debugPrint("Error: Image path is empty.");
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..add({"sender": "ai", "message": "⚠️ Error: Could not find selected image file."});
+      });
+      return;
+    }
+
+    // Get API Key
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    if (apiKey == null || apiKey.isEmpty) {
+      debugPrint('Error: No Gemini API key found');
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..add({"sender": "ai", "message": "⚠️ Error: API Key not configured."});
+      });
+      return;
+    }
+
+    // Add "Analyzing image..." placeholder
+    setState(() {
+      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing image..."});
+    });
+
+    try {
+      // Read and Encode Image File
+      final imageFile = File(imagePath);
+      if (!await imageFile.exists()) {
+        throw Exception("Image file does not exist at path: $imagePath");
+      }
+      final imageBytes = await imageFile.readAsBytes();
+      final base64Image = base64Encode(imageBytes);
+
+      // --- Determine MIME Type (Common image types) ---
+      String mimeType = 'image/jpeg'; // Default or common type
+      if (imagePath.endsWith('.png')) {
+        mimeType = 'image/png';
+      } else if (imagePath.endsWith('.webp')) {
+        mimeType = 'image/webp';
+      } else if (imagePath.endsWith('.heic')) {
+        mimeType = 'image/heic';
+      } else if (imagePath.endsWith('.heif')) {
+        mimeType = 'image/heif';
+      }
+      // Add more types if needed
+
+      // --- Build the Enhanced Prompt using the new function ---
+      final fullPrompt = _buildEnhancedImagePrompt(
+          baseInstruction,
+          currentStops,
+          currentBusAssignments,
+          currentActiveBusSegments
+      );
+      debugPrint("--- Sending Image Prompt to AI ---");
+      // Avoid printing potentially huge base64 string in prompt here
+      // debugPrint(fullPrompt);
+
+      // Construct the API Request Body (Multimodal: Text + Image)
+      final requestBody = jsonEncode({
+        "contents": [
+          {
+            "parts": [
+              // Part 1: The combined text prompt (instruction + context)
+              {"text": fullPrompt},
+              // Part 2: The image data
+              {
+                "inlineData": {
+                  "mimeType": mimeType,
+                  "data": base64Image // The Base64 encoded image data
+                }
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0.7, // Adjust as needed
+          "maxOutputTokens": 1024,
+        }
+      });
+
+      // Make the API Call (use a multimodal model like 1.5 flash/pro)
+      final response = await http.post(
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: requestBody,
+      ).timeout(const Duration(seconds: 90)); // Longer timeout for image analysis
+
+      debugPrint("Gemini Image response status: ${response.statusCode}");
+      debugPrint("Gemini Image response body: ${response.body.substring(0, min(response.body.length, 500))}...");
+
+
+      // Process the Response
+      String messageText;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        messageText = data['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? "Could not extract response text.";
+        if (data['candidates'] == null || data['candidates'].isEmpty) {
+          final blockReason = data['promptFeedback']?['blockReason'];
+          messageText = blockReason != null ? "⚠️ Response blocked: $blockReason" : "⚠️ Received an empty response from the AI.";
+        } else if (data['candidates']?[0]?['finishReason'] == 'MAX_TOKENS') {
+          messageText += "\n\n[Response may be truncated]";
+        }
+      } else {
+        String errorDetail = response.body;
+        try {
+          final errorJson = jsonDecode(response.body);
+          errorDetail = errorJson['error']?['message'] ?? response.body;
+        } catch (_) {}
+        messageText = "⚠️ API Error ${response.statusCode}: $errorDetail";
+      }
+
+      // Update chat history, replacing "Analyzing..."
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing image...")
+          ..add({"sender": "ai", "message": messageText});
+      });
+
+    } catch (e) {
+      debugPrint("Error sending image query: $e");
+      // Update chat history with error, replacing "Analyzing..."
+      setState(() {
+        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
+          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing image...")
+          ..add({"sender": "ai", "message": "⚠️ Error processing image: ${e.toString()}"});
+      });
+    }
+  }
+
   String _buildEnhancedAudioPrompt(
       String baseInstruction, // e.g., "Analyze this audio..."
       List<Map<String, dynamic>> stops,

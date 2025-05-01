@@ -4,6 +4,14 @@ plugins {
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
+dependencies {
+    // ... your other dependencies like kotlin-stdlib, core-ktx, etc.
+
+    // Add this line for core library desugaring
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4' // Use the latest version if needed
+
+    // ... other dependencies like firebase-bom, etc.
+}
 
 android {
     namespace = "com.example.smart_move"
@@ -11,6 +19,7 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        coreLibraryDesugaringEnabled true
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }

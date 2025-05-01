@@ -1168,22 +1168,20 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
   USER'S QUESTION: $query
 
   RESPONSE REQUIREMENTS:
-  1. Understand the user's question.
-  2. Use the provided CONTEXT and LIVE STOP DETAILS primarily for real-time info (ETA/Crowd). Use GENERAL BUS STOP INFO for location/serving buses if needed.
-  3. Start with the most relevant recommendation including specific bus number/code (e.g., A1, B2).
-  4. Include specific stop names, **live** crowd levels, and **live** ETAs from the LIVE STOP DETAILS section.
-  5. Keep response concise and clear.
-  6. Format clearly with emojis.
+1. Understand the user's question.
+2. Use the provided CONTEXT and LIVE STOP DETAILS primarily...
+3. Start with the most relevant recommendation...
+4. Include specific stop names, **live** crowd levels, and **live** ETAs...
+5. **ETA Interpretation:** If a bus's ETA is negative, it means bus has passed by the destination asked by user. if 0, it means, its approaching to the destination
+6. Keep response concise and clear.
+7. Format clearly with emojis.
 
   NOW ANSWER THE USER'S QUESTION:
   """;
   }
 
-
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
-
-    // Add user message and placeholder immediately
     final userMessage = {"sender": "user", "message": query};
     final analyzingMessage = {"sender": "ai", "message": "🔄 Analyzing..."};
     // Create a temporary ID to easily find the analyzing message later

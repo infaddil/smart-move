@@ -1,11 +1,8 @@
-// lib/main.dart
-
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:smart_move/screens/home_screen.dart';
 import 'package:smart_move/screens/bus_tracker.dart';
@@ -13,10 +10,11 @@ import 'package:smart_move/screens/live_crowd_screen.dart';
 import 'package:smart_move/screens/alt_routes_screen.dart';
 import 'package:smart_move/screens/route_screen.dart';
 import 'package:smart_move/screens/profile_screen.dart';
-
+import 'services/notification_service.dart';
 import 'firebase_options.dart';
 
-/// DEV ONLY: allow self-signed certs
+final NotificationService notificationService = NotificationService();
+
 class MyHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) =>
@@ -33,6 +31,10 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  notificationService.initialize().catchError((error) {
+    print("Error initializing NotificationService in main: $error");
+    // Handle critical initialization failure if necessary
+  });
   await dotenv.load(fileName: ".env");
 
   runApp(NoCramApp());

@@ -8,17 +8,26 @@ import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class RouteScreen extends StatefulWidget {
+  const RouteScreen({super.key});
   @override
   _RouteScreenState createState() => _RouteScreenState();
 }
 
 class _RouteScreenState extends State<RouteScreen> {
   late GoogleMapController _mapController;
-  int _selectedIndex = 0;
   User? _currentUser;
   String? _userRole;
+  LatLng?    _initialPosition;
+  String?    _routeInitialName;
+  String?    _routeTerminalName;
+  String? _driverRouteType;
+  String? _assignedBusCode;
+  List<Map<String, dynamic>> _assignedPickupStops = [];
+  Map<String, LatLng> _allStopLocations = {};
+  bool _isLoading = true; // Flag to show loading indicator
 
   List<Map<String, dynamic>> _pickupStops = [];
   String? _currentPickupMessage;
@@ -28,6 +37,16 @@ class _RouteScreenState extends State<RouteScreen> {
   // Real-time location tracking.
   LatLng? _currentLocation;
   StreamSubscription<Position>? _positionStreamSubscription;
+  final Map<String, String> _routeTypeStartStops = const {
+    'A': 'Aman Damai',
+    'B': 'Padang Kawad',
+    'C': 'Padang Kawad',
+  };
+  final Map<String, String> _routeTypeEndStops = const {
+    'A': 'Harapan',
+    'B': 'Aman Damai',
+    'C': 'Aman Damai',
+  };
 
   @override
   void dispose() {
@@ -38,21 +57,234 @@ class _RouteScreenState extends State<RouteScreen> {
   @override
   void initState() {
     super.initState();
-    _loadBusStopsFromFirestore();
     _currentUser = FirebaseAuth.instance.currentUser;
-    if (_currentUser != null) _fetchUserRole();
+    if (_currentUser != null) {
+      _loadDriverRouteAndAssignment(); // Recommended
+    } else {
+      // Handle case where user is not logged in at init
+      setState(() => _isLoading = false);
+    }
+
+    _loadBusStopsFromFirestore();
 
     FirebaseAuth.instance.authStateChanges().listen((user) {
-      setState(() {
-        _currentUser = user;
-        if (user != null) {
-          _fetchUserRole();
-        } else {
-          _userRole = null;
-        }
-      });
+      // Make sure the logic inside the listener is also null-safe
+      if (user != null && user.uid != _currentUser?.uid) {
+        setState(() {
+          _currentUser = user;
+          _isLoading = true;
+          _assignedPickupStops.clear();
+          _pickupStops.clear(); // Clear both lists just in case
+        });
+        _loadDriverRouteAndAssignment(); // Reload data for new user
+      } else if (user == null) {
+        setState(() {
+          _currentUser = null;
+          _isLoading = false;
+          _assignedPickupStops.clear();
+          _pickupStops.clear(); // Clear both lists
+        });
+      }
     });
+
   }
+  Future<void> _fetchAllStopLocations() async {
+    try {
+      final stopsSnap = await FirebaseFirestore.instance.collection('busStops').get();
+      final locations = <String, LatLng>{};
+      for (var doc in stopsSnap.docs) {
+        final data = doc.data();
+        final name = data['name'] as String?;
+        final geo = data['location'] as GeoPoint?;
+        if (name != null && geo != null) {
+          locations[name] = LatLng(geo.latitude, geo.longitude);
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _allStopLocations = locations;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error fetching all stop locations: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error loading stop locations: ${e.toString()}")),
+        );
+      }
+    }
+  }
+  Future<void> _loadDriverRouteAndAssignment() async {
+    if (_currentUser == null) {
+      debugPrint("No current user found for loading data.");
+      setState(() => _isLoading = false);
+      return;
+    }
+    if (!mounted) return; // Check if widget is still mounted
+    setState(() => _isLoading = true);
+
+    try {
+      // Ensure stop locations are loaded first (or concurrently)
+      if (_allStopLocations.isEmpty) {
+        await _fetchAllStopLocations();
+        if (!mounted) return; // Re-check after await
+        if (_allStopLocations.isEmpty) {
+          throw Exception("Failed to load essential stop location data.");
+        }
+      }
+
+      // 1. Get Driver's routeType
+      final userSnap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(_currentUser!.uid)
+          .get();
+
+      if (!userSnap.exists || userSnap.data() == null) {
+        throw Exception("User document not found or is empty.");
+      }
+
+      final userData = userSnap.data()!;
+      final driverRouteType = userData['routeType'] as String?;
+
+      if (driverRouteType == null || !_routeTypeStartStops.containsKey(driverRouteType)) {
+        throw Exception("Driver routeType '$driverRouteType' is missing or invalid.");
+      }
+
+      // Store driver's route type and predefined start/end names
+      _driverRouteType = driverRouteType;
+      _routeInitialName = _routeTypeStartStops[driverRouteType];
+      _routeTerminalName = _routeTypeEndStops[driverRouteType];
+
+      // Get the LatLng for the fixed initial stop for map centering
+      _initialPosition  = _allStopLocations[_routeInitialName];
+      if (_initialPosition  == null) {
+        throw Exception("Could not find location for initial stop '$_routeInitialName'.");
+      }
+
+      // 2. Query busActivity for ANY document matching the driver's routeType
+      debugPrint("Querying busActivity for routeType: $_driverRouteType");
+      final query = await FirebaseFirestore.instance
+          .collection('busActivity')
+          .where('routeType', isEqualTo: _driverRouteType) // Match routeType
+          .limit(1) // Get the first one found
+          .get();
+
+      if (query.docs.isEmpty) {
+        debugPrint("No active busActivity found for routeType '$_driverRouteType'.");
+        // Keep _assignedPickupStops empty, user will see the message on button press
+        if (mounted) {
+          setState(() {
+            _isLoading = false; // Stop loading, show map centered on start
+          });
+        }
+        return; // Exit function, nothing more to load
+      }
+
+      // 3. Process the found busActivity document
+      final busDoc = query.docs.first.data();
+      _assignedBusCode = busDoc['busCode'] as String?; // Store the bus code
+
+      final rawStopsList = busDoc['stops'] as List?;
+      final List<Map<String, dynamic>> processedStops = [];
+
+      if (rawStopsList != null) {
+        for (var rawStop in rawStopsList) {
+          if (rawStop is Map) {
+            final name = rawStop['name'] as String?;
+            final crowd = (rawStop['crowd'] as num?)?.toInt();
+            final eta = (rawStop['eta'] as num?)?.toInt();
+            final gp = rawStop['location'] as GeoPoint?; // Location from busActivity stop entry
+
+            if (name != null && crowd != null && eta != null && gp != null) {
+              processedStops.add({
+                'name': name,
+                'crowd': crowd,
+                'eta': eta,
+                'location': LatLng(gp.latitude, gp.longitude),
+              });
+            } else {
+              debugPrint("⚠️ busActivity doc ${query.docs.first.id}: Stop map missing data (name, crowd, eta, or location). Stop: $rawStop");
+            }
+          } else {
+            debugPrint("⚠️ busActivity doc ${query.docs.first.id}: Item in 'stops' list is not a Map. Item: $rawStop");
+          }
+        }
+      } else {
+        debugPrint("⚠️ busActivity doc ${query.docs.first.id} has null or missing 'stops' field.");
+      }
+
+      if (mounted) {
+        setState(() {
+          _assignedPickupStops = processedStops; // Update with assigned stops
+          _isLoading = false; // Loading complete
+        });
+        debugPrint("Successfully loaded ${_assignedPickupStops.length} pickup stops for bus $_assignedBusCode (Route $_driverRouteType)");
+        // Optionally move map camera here if needed, though build handles initial position
+        if (_mapController != null && _initialPosition  != null) {
+          _mapController!.moveCamera(CameraUpdate.newLatLngZoom(_initialPosition !, 15));
+        }
+      }
+
+    } catch (e) {
+      debugPrint("Error loading driver route/assignment: $e");
+      if (mounted) {
+        setState(() => _isLoading = false); // Stop loading on error
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error loading route data: ${e.toString()}")),
+        );
+      }
+    }
+  }
+  Future<bool> _checkAndRequestLocationPermissions() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Location services are disabled. Please enable them.')));
+      return false;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Location permissions are denied.')));
+        return false;
+      }
+    }
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Location permissions are permanently denied. Cannot track location.')));
+      return false;
+    }
+    return true; // Permissions granted
+  }
+
+  void _startNavigation() {
+    if (_assignedPickupStops.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar( // Use const
+          content: Text("No pickup stops assigned for this route activity."),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _hasStartedNavigation = true;
+      // Set initial message for the *first* assigned pickup stop
+      _currentPickupMessage = "Picking up at: ${_assignedPickupStops.first['name']}";
+    });
+
+    _startLocationUpdates(); // Start tracking driver's location
+
+    // Animate camera to the first pickup stop
+    _mapController?.animateCamera( // Use null-aware call
+      CameraUpdate.newLatLngZoom(
+        _assignedPickupStops.first['location'],
+        17,
+      ),
+    );
+  }
+
 
   Future<void> _fetchUserRole() async {
     final doc = await FirebaseFirestore.instance
@@ -64,11 +296,6 @@ class _RouteScreenState extends State<RouteScreen> {
     });
   }
 
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-  }
   Future<void> _checkLocationPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -117,208 +344,326 @@ class _RouteScreenState extends State<RouteScreen> {
     }
   }
 
-  void _loadBusStopsFromFirestore() async {
-    // 1) grab the driver's routeType unconditionally
-    final userDoc = await FirebaseFirestore.instance
+  Future<void> _loadBusStopsFromFirestore() async {
+    // 1) find the user's routeType
+    final userSnap = await FirebaseFirestore.instance
         .collection('users')
         .doc(_currentUser!.uid)
         .get();
-    final busType = userDoc.data()!['routeType'] as String;
+    final busType = userSnap.data()!['routeType'] as String;
 
-    // 2) compute pickups for exactly that routeType (A, B or C)
-    final assignments = await BusRouteService()
-        .getAssignments(busType, capacity: 60);
+    // 2) query exactly the busActivity doc for *this* driver
+    final query = await FirebaseFirestore.instance
+        .collection('busActivity')
+        .where('driverId', isEqualTo: _currentUser!.uid)
+        .limit(1)
+        .get();
+    if (query.docs.isEmpty) {
+      // no assignment yet!
+      return;
+    }
+    final busDoc = query.docs.first.data();
+
+    // 3) pull out the raw stops array
+    List<Map<String, dynamic>> stops =
+    (busDoc['stops'] as List).map((raw) {
+      final gp = raw['location'] as GeoPoint;
+      return {
+        'name':     raw['name']   as String,
+        'crowd':    raw['crowd']  as int,
+        'eta':      raw['eta']    as int,
+        'location': LatLng(gp.latitude, gp.longitude),
+      };
+    }).toList();
+
+    // 4) define each route's “start” + “end”
+    final initials = {
+      'A': 'Aman Damai',
+      'B': 'Padang Kawad',
+      'C': 'Padang Kawad',
+    };
+    final terminals = {
+      'A': 'Harapan',
+      'B': 'Aman Damai',
+      'C': 'Aman Damai',
+    };
+    _routeInitialName  = initials[busType];
+    _routeTerminalName = terminals[busType];
+
+    // 5) rotate so we start from the initial
+    final startIdx = stops.indexWhere((s) => s['name']==_routeInitialName);
+    if (startIdx>0) {
+      stops = [
+        ...stops.sublist(startIdx),
+        ...stops.sublist(0, startIdx),
+      ];
+    }
+
+    // 6) truncate so we end at the terminal
+    final endIdx = stops.indexWhere((s) => s['name']==_routeTerminalName);
+    if (endIdx>=0) {
+      stops = stops.sublist(0, endIdx+1);
+    }
 
     setState(() {
-      _pickupStops = assignments['current']!;
+      _pickupStops        = stops;
+      _initialPosition    = stops.first['location'] as LatLng;
     });
   }
 
   void _moveToNextStop() {
-    if (_pickupStops.isNotEmpty) {
-      final currentStop = _pickupStops.first;
-      // Animate to the current stop.
-      _mapController.animateCamera(
-        CameraUpdate.newLatLngZoom(currentStop['location'], 17),
-      );
-
+    if (!mounted) return;
+    if (_assignedPickupStops.isEmpty) {
+      // This case should ideally be handled by disabling the button, but double-check
       setState(() {
-        _currentPickupMessage = "Picking up at: ${currentStop['name']}";
-        _pickupStops.removeAt(0); // Remove only once!
+        _currentPickupMessage = "All pickups completed!";
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("All pickups completed")), // Use const
+      );
+      return;
+    }
+
+    // Process the current stop (first in list) before removing
+    final currentStop = _assignedPickupStops.first;
+    debugPrint("Completed pickup at: ${currentStop['name']}");
+    // ---> TODO: Add any logic needed when arriving/leaving a stop (e.g., update Firestore) <---
+
+    // Remove the completed stop
+    setState(() {
+      _assignedPickupStops.removeAt(0);
+    });
+
+    // Check if there are more stops
+    if (_assignedPickupStops.isNotEmpty) {
+      final nextStop = _assignedPickupStops.first;
+      // Animate to the *next* stop.
+      _mapController?.animateCamera( // Use null-aware call
+        CameraUpdate.newLatLngZoom(nextStop['location'], 17),
+      );
+      // Update the message for the new next stop
+      setState(() {
+        _currentPickupMessage = "Picking up at: ${nextStop['name']}";
       });
     } else {
+      // Last stop was just completed
+      setState(() {
+        _currentPickupMessage = "All pickups completed!";
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("All pickups completed")),
+        const SnackBar(content: Text("All pickups completed!")), // Use const
       );
+      // Optionally stop location updates if no longer needed
+      // _positionStreamSubscription?.cancel();
     }
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
-    // Build markers ONLY for the stops in _pickupStops.
-    Set<Marker> markers = {};
-    for (int i = 0; i < _pickupStops.length; i++) {
-      final stop = _pickupStops[i];
-      // The currently "active" stop is the first in the list (green).
-      BitmapDescriptor markerIcon = (i == 0 && _hasStartedNavigation)
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text('Pickup Route - Loading...'),
+          backgroundColor: Colors.purple,
+        ),
+        body: const Center(child: CircularProgressIndicator()), // Use const
+      );
+    }
+
+    // --- Build Markers ---
+    final Set<Marker> markers = {};
+
+    // Marker for the fixed route start point
+    if (_initialPosition  != null && _routeInitialName != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('route-start'), // Use const
+          position: _initialPosition !,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: InfoWindow(title: 'Route Start: $_routeInitialName'),
+        ),
+      );
+    }
+    // Marker for the fixed route end point (Optional but helpful)
+    if (_routeTerminalName != null && _allStopLocations.containsKey(_routeTerminalName)) {
+      markers.add(
+        Marker(
+          markerId: MarkerId('route-end-$_routeTerminalName'),
+          position: _allStopLocations[_routeTerminalName]!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRose),
+          infoWindow: InfoWindow(title: 'Route End: $_routeTerminalName'),
+        ),
+      );
+    }
+
+    // Markers for the ASSIGNED PICKUP stops
+    for (int i = 0; i < _assignedPickupStops.length; i++) {
+      final stop = _assignedPickupStops[i];
+      final stopName = stop['name'] as String;
+      final stopLocation = stop['location'] as LatLng;
+
+      // Highlight the *next* pickup stop in green during navigation
+      final bool isNextStop = _hasStartedNavigation && i == 0;
+      final markerIcon = isNextStop
           ? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen)
-          : BitmapDescriptor.defaultMarker; // default (red)
+          : BitmapDescriptor.defaultMarker; // Default (red) for other assigned stops
 
       markers.add(
         Marker(
-          markerId: MarkerId(stop['name']),
-          position: stop['location'],
+          markerId: MarkerId('pickup-stop-$stopName'),
+          position: stopLocation,
           icon: markerIcon,
           infoWindow: InfoWindow(
-            title: stop['name'],
-            snippet: "Crowd: ${stop['crowd']}, ETA: ${stop['eta']} mins",
+            title: stopName,
+            snippet: 'Crowd: ${stop['crowd']}',
           ),
         ),
       );
     }
 
-    // Add a marker for the user's current location, if available.
+    // Marker for the driver's current location (if available)
     if (_currentLocation != null) {
       markers.add(
         Marker(
-          markerId: MarkerId("userLocation"),
+          markerId: const MarkerId("userLocation"), // Use const
           position: _currentLocation!,
-          infoWindow: InfoWindow(title: "You are here"),
+          infoWindow: const InfoWindow(title: "You are here"), // Use const
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          flat: true, // Make driver icon flat
+          // rotation: _currentBearing, // Add bearing if you calculate it
         ),
       );
     }
-    Set<Polyline> polylines = (_hasStartedNavigation && _pickupStops.isNotEmpty)
-        ? {
-      Polyline(
-        polylineId: PolylineId("pickupRoute"),
-        color: Colors.purple,
-        width: 5,
-        points: _pickupStops.map((s) => s['location'] as LatLng).toList(),
-      )
+
+    // --- Build Polylines ---
+    final Set<Polyline> polylines = {};
+
+    // Draw polyline ONLY between the assigned pickup stops during navigation
+    if (_hasStartedNavigation && _assignedPickupStops.isNotEmpty) {
+      // Create points list including current location if desired for smoother start
+      List<LatLng> pickupPoints = [];
+      if (_currentLocation != null) {
+        pickupPoints.add(_currentLocation!); // Start polyline from current location
+      }
+      pickupPoints.addAll(_assignedPickupStops.map((s) => s['location'] as LatLng));
+
+      if (pickupPoints.length >= 2) { // Need at least 2 points for a line
+        polylines.add(
+          Polyline(
+            polylineId: const PolylineId("pickupRoute"), // Use const
+            color: Colors.deepOrange, // Different color for pickup path
+            width: 5,
+            points: pickupPoints,
+          ),
+        );
+      }
     }
-        : <Polyline>{};
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Pickup Route'),
+        // Dynamic title based on state
+        title: Text(_hasStartedNavigation
+            ? (_assignedBusCode != null ? 'Driving: $_assignedBusCode' : 'Navigation Started')
+            : 'Route: $_driverRouteType'
+        ),
         backgroundColor: Colors.purple,
       ),
       body: Stack(
         children: [
-          // The map itself:
           GoogleMap(
             onMapCreated: (controller) {
               _mapController = controller;
-              // Move camera to the first eligible pickup stop (if any)
-              if (!_hasStartedNavigation && _pickupStops.isNotEmpty) {
-                _mapController.moveCamera(
-                  CameraUpdate.newLatLngZoom(_pickupStops.first['location'], 16),
-                );
+              // Set initial camera AFTER map is created
+              if (_initialPosition  != null) {
+                controller.moveCamera(CameraUpdate.newLatLngZoom(_initialPosition !, 15));
               }
             },
+            // Use the fixed start position if available, otherwise fallback
             initialCameraPosition: CameraPosition(
-              target: _pickupStops.isNotEmpty
-                  ? _pickupStops.first['location']
-                  : LatLng(5.356, 100.303), // fallback coordinate
-              zoom: 16,
+              target: _initialPosition  ?? const LatLng(5.356, 100.303), // Fallback USM coords
+              zoom: 15,
             ),
             markers: markers,
             polylines: polylines,
-            myLocationEnabled: true,
-            myLocationButtonEnabled: false,
+            myLocationEnabled: false, // Disable default blue dot (using custom marker)
+            myLocationButtonEnabled: true, // Keep the button to center on location
+            zoomControlsEnabled: true, // Optional: enable zoom controls
           ),
 
-          // New Top Banner: Shows the "Picking up at: ..." message.
+          // Top Banner for current pickup instruction
           if (_hasStartedNavigation && _currentPickupMessage != null)
             Positioned(
-              top: 20,
-              left: 20,
-              right: 20,
+              top: 10, // Adjusted position
+              left: 10,
+              right: 10,
               child: Container(
-                padding: EdgeInsets.symmetric(vertical: 10, horizontal: 15),
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12), // Use const
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.85),
-                  borderRadius: BorderRadius.circular(10),
+                    color: Colors.black.withOpacity(0.8), // Slightly less opaque
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: const [ // Add subtle shadow
+                      BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+                    ]
                 ),
                 child: Text(
                   _currentPickupMessage!,
-                  style: TextStyle(
+                  style: const TextStyle( // Use const
                     color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 16, // Slightly larger
+                    fontWeight: FontWeight.bold,
                   ),
                   textAlign: TextAlign.center,
                 ),
               ),
             ),
 
-          // Existing Bottom UI: Current Stop information.
+          // (Optional) Bottom Info Panel - can show next stop or status
           if (_hasStartedNavigation)
             Positioned(
-              left: 20,
-              right: 20,
-              bottom: 80,
+              left: 10,
+              right: 10,
+              bottom: 80, // Adjust position to make space for FAB
               child: Container(
-                padding: EdgeInsets.all(12),
+                padding: const EdgeInsets.all(12), // Use const
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(8),
+                    color: Colors.white.withOpacity(0.95), // More opaque
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: const [ // Add subtle shadow
+                      BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, -1)),
+                    ]
                 ),
                 child: Center(
-                  child: _pickupStops.isNotEmpty
-                      ? Text(
-                    "Next Stop: ${_pickupStops.first['name']} (Crowd: ${_pickupStops.first['crowd']})",
-                    style: TextStyle(
+                  child: Text(
+                    _assignedPickupStops.isNotEmpty
+                        ? "Next: ${_assignedPickupStops.first['name']} (Crowd: ${_assignedPickupStops.first['crowd']})"
+                        : "Route Completed!",
+                    style: const TextStyle( // Use const
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
+                      color: Colors.black87,
                     ),
-                  )
-                      : Text(
-                    "All pickups completed",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    textAlign: TextAlign.center,
                   ),
                 ),
               ),
             ),
         ],
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat, // Center the FAB
       floatingActionButton: !_hasStartedNavigation
           ? FloatingActionButton.extended(
-        onPressed: () {
-          if (_pickupStops.isEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content:
-                Text("No eligible pickup stops available"),
-              ),
-            );
-            return;
-          }
-          setState(() {
-            _hasStartedNavigation = true;
-          });
-          _startLocationUpdates();
-          _mapController.animateCamera(
-            CameraUpdate.newLatLngZoom(
-              _pickupStops.first['location'],
-              17,
-            ),
-          );
-        },
-        label: Text("Start Navigation"),
-        icon: Icon(Icons.navigation),
-        backgroundColor: Colors.purple,
+        onPressed: _startNavigation, // Use dedicated function
+        label: const Text("Start Navigation"), // Use const
+        icon: const Icon(Icons.navigation_outlined), // Use const & outlined icon
+        backgroundColor: Colors.green[700], // Different color for Start
       )
           : FloatingActionButton.extended(
-        onPressed: _pickupStops.isNotEmpty ? _moveToNextStop : null,
-        label:
-        Text(_pickupStops.isNotEmpty ? "Next Stop" : "Done"),
-        icon: Icon(Icons.directions_bus),
-        backgroundColor: Colors.purple,
+        // Disable button if no more stops
+        onPressed: _assignedPickupStops.isNotEmpty ? _moveToNextStop : null,
+        label: Text(_assignedPickupStops.isNotEmpty ? "Arrived at Next Stop" : "Finish Route"),
+        icon: Icon(_assignedPickupStops.isNotEmpty ? Icons.arrow_forward : Icons.check_circle_outline),
+        backgroundColor: _assignedPickupStops.isNotEmpty ? Colors.purple : Colors.grey, // Grey out when done
       ),
     );
   }

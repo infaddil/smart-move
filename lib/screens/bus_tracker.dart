@@ -107,7 +107,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
         }
       }).catchError((e) {
         debugPrint('❌ Failed to load assets/bus_$code.png → $e');
-        if (mounted) {
+        if (mounted) { // <<< ADD Check >>>
           setState(() => _busIcons[code] = BitmapDescriptor.defaultMarkerWithHue(
               HSVColor.fromColor(_busColors[code]!).hue
           ));
@@ -132,7 +132,11 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
             _startBusAnimations();
           });
         } else {
-          debugPrint('⚠️ Not starting animations - missing required data after init');
+          if (!mounted) { // Optional: log if not mounted here
+            debugPrint("initState.then: Not starting animations - widget unmounted.");
+          } else {
+            debugPrint('⚠️ Not starting animations - missing required data after init');
+          }
         }
       });
       // --- END OF BLOCK TO KEEP ---
@@ -198,7 +202,9 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
         occupiedStops.add(stop['name'] as String);
       }
 
-      setState(() {});
+      if (mounted) { // Check before setState
+        setState(() {});
+      }
     }
   }
 
@@ -560,7 +566,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
               // Decide how to handle Firestore errors (e.g., retry later?)
             }
           }
-          // --- END REDUCED FIRESTORE UPDATE ---
 
           if (_busPositions[busId] != currentPos || _busProgress[busId] != newProgress || _busIndex[busId] != segmentIndex) {
             if (mounted) {

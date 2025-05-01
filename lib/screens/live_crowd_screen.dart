@@ -47,6 +47,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   Map<String,LatLng>   _stopLocations     = {};
   Map<String,int>      _crowdLevels       = {};
 
+
   List<Map<String,dynamic>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
@@ -239,18 +240,43 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   // ------------------------ LOCATION / DATA LOADING ------------------------ //
   Future<void> _getLocation() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
+    if (!serviceEnabled) {
+      debugPrint("Location services disabled.");
+      // Optionally show a message to the user
+      return;
+    }
+
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
+      debugPrint("Location permission denied initially. Requesting...");
       permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        debugPrint("Location permission denied after request.");
+        // Optionally show a message to the user
+        return; // Exit if permission still denied
+      }
     }
-    Position position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
-    setState(() {
-      _currentLocation = LatLng(position.latitude, position.longitude);
-    });
+
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (mounted) { // Check if the state is still in the tree
+        setState(() {
+          _currentLocation = LatLng(position.latitude, position.longitude); // Use the correct variable _currentLocation
+        });
+      }
+    } catch (e) {
+      debugPrint("Error getting current position in _getLocation: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error getting location: ${e.toString()}"))
+        );
+      }
+    }
   }
 
   Future<void> _loadBusStopsFromFirestore() async {

@@ -469,8 +469,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
           // Also check if progress actually changed to avoid unnecessary writes on reset/pause
           if (t.tick % 10 == 0 && newProgress != currentProgress) {
             final String routeLetter = code[0];
+            final Map<String, int> etaMap = {};
             final List<String> stopNames = _routes[routeLetter] ?? [];
-            final Map<String, int> etaMap = {}; // Keep your ETA calculation logic here
 
             // --- ETA Calculation Logic START (Keep your existing logic here) ---
             if (stopNames.isNotEmpty && _stopLocations.isNotEmpty) {
@@ -521,20 +521,20 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
               }
             }
             // --- ETA Calculation Logic END ---
-            final List<Map<String, dynamic>> stopsData = [];
-            for (String stopName in stopNames) {
-              // Get ETA from the calculated map (default to -1 if not found/passed)
-              final int etaValue = etaMap[stopName] ?? -1;
-              // Get crowd level from the state map (default to 0 if not found)
-              // Note: _crowdLevels might be stale if not updated frequently.
-              final int crowdValue = _crowdLevels[stopName] ?? 0;
+            final assignedStops = _busSegments[busId] ?? [];
+            final List<Map<String, dynamic>> stopsData = assignedStops.map((s) {
+              final name = s['name'] as String;
+              return {
+                'name':  name,
+                'eta':   etaMap[name]        ?? -1,
+                'crowd': _crowdLevels[name]  ??  0,
+                // if you also want to store the stop’s geo‐point, add:
+                'location': GeoPoint(
+                (s['location'] as LatLng).latitude,
+                (s['location'] as LatLng).longitude,)
 
-              stopsData.add({
-                'name': stopName,
-                'eta': etaValue,
-                'crowd': crowdValue,
-              });
-            }
+              };
+            }).toList();
 
             final Map<String, dynamic> busActivityData = {
               'busCode': code,
@@ -647,12 +647,16 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
       _stopLocations[name] = LatLng(geo.latitude, geo.longitude);
     }
 
-    // 3) Load crowd levels
-    final crowdSnap =
-    await FirebaseFirestore.instance.collection('crowd').get();
-    for (var doc in crowdSnap.docs) {
-      _crowdLevels[doc.id] = (doc['crowd'] as num).toInt();
-    }
+    FirebaseFirestore.instance
+        .collection('busStops')
+        .snapshots()
+        .listen((snapshot) {
+      for (var doc in snapshot.docs) {
+        final name     = doc['name']  as String;
+        final crowdVal = (doc['crowd'] as num?)?.toInt() ?? 0;
+        _crowdLevels[name] = crowdVal;
+      }
+    });
 
     // 4) Randomize bus assignments (3 buses, two share one routeType)
     _assignBuses();

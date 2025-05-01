@@ -23,8 +23,9 @@ class BusRouteService {
       return {
         'name': name,
         'location': LatLng(geo.latitude, geo.longitude),
-        // one random crowd for each stop, cached here
-        'crowd': _rnd.nextInt(50) + 1,
+        // Generate crowd between 10 and 22 (inclusive)
+        // _rnd.nextInt(13) generates 0-12. Adding 10 gives 10-22.
+        'crowd': 10 + _rnd.nextInt(13), // MODIFIED LINE
         // you can keep ETA random or plug in your real logic
         'eta': _rnd.nextInt(30) + 1,
       };
@@ -76,26 +77,41 @@ class BusRouteService {
     }).toList();
   }
 
+  // In bus_route_service.dart
+
   List<Map<String, dynamic>> _computeSegment(
       List<Map<String, dynamic>> stopsData,
       int capacity, {
-        List<String>? excludedStops, // Add this parameter
+        List<String>? excludedStops,
       }) {
-    // Filter out excluded stops first
-    final filtered = excludedStops == null
-        ? stopsData
-        : stopsData.where((s) => !excludedStops.contains(s['name'])).toList();
 
-    filtered.sort((a,b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
+    // --- ADDED FILTERING STEP ---
+    final validStops = stopsData.where((stop) {
+      final crowd = stop['crowd'] as int? ?? 0;
+      final name = stop['name'] as String?;
+      // Ensure stop is not excluded AND crowd is within range
+      final isExcluded = excludedStops?.contains(name) ?? false;
+      final isInRange = crowd >= 10 && crowd <= 22;
+      return !isExcluded && isInRange;
+    }).toList();
+    // --- END ADDED FILTERING STEP ---
+
+    // Sort the VALID stops by crowd (descending)
+    validStops.sort((a, b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
 
     var total = 0;
-    final seg = <Map<String,dynamic>>[];
-    for (var s in filtered) {
+    final seg = <Map<String, dynamic>>[];
+    for (var s in validStops) { // Iterate through the filtered & sorted list
       final c = s['crowd'] as int;
-      if (total + c <= capacity) {
+      if (total + c <= capacity) { // Still ensures total doesn't exceed 60
         seg.add(s);
         total += c;
       }
+      // Optional: Break early if the next stop would definitely exceed capacity
+      // This can slightly improve efficiency if lists are very long.
+       else if (c > 0) {
+          if (capacity - total < c) break;
+       }
     }
     return seg;
   }

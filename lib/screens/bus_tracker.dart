@@ -10,6 +10,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
+import 'package:smart_move/screens/bus_route_service.dart';
 
 class BusTrackerScreen extends StatefulWidget {
   @override
@@ -530,40 +531,44 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
             final assignedStops = _busSegments[busId] ?? [];
             final List<Map<String, dynamic>> stopsData = assignedStops.map((s) {
               final name = s['name'] as String;
+              final location = s['location'] as LatLng?;
+              final crowd = s['crowd'] as int? ?? 0;
+
+              GeoPoint? geoPointLocation;
+              if (location != null) {
+                geoPointLocation = GeoPoint(location.latitude, location.longitude);
+              } else {
+                debugPrint("⚠️ Warning: Location missing for stop '$name' in bus segment for $busId. GeoPoint will be null.");
+                // Handle null location case appropriately, maybe skip the stop or use a default?
+                // For now, we allow null, but Firestore might reject it depending on rules.
+              }
               return {
                 'name':  name,
                 'eta':   etaMap[name]        ?? -1,
-                'crowd': _crowdLevels[name]  ??  0,
-                // if you also want to store the stop’s geo‐point, add:
-                'location': GeoPoint(
-                (s['location'] as LatLng).latitude,
-                (s['location'] as LatLng).longitude,)
+                'crowd': crowd,
+                'location': geoPointLocation
 
               };
-            }).toList();
+            }).where((stopMap) => stopMap['location'] != null).toList();
 
             final Map<String, dynamic> busActivityData = {
               'busCode': code,
-              // --- >>> USE NEW STRUCTURED LIST <<< ---
-              'stops': stopsData,
-              // --- >>> REMOVE OLD etaMap <<< ---
-              // 'etaMap': etaMap, // Removed, data is now in 'stops' list
+              'routeType': routeLetter, // Add the routeType (A, B, C)
+              'stops': stopsData, // Use the corrected list
               'currentPosition': GeoPoint(currentPos.latitude, currentPos.longitude),
-              'isActive': (newProgress < 1.0 && newProgress > 0.0),
+              'isActive': (newProgress < 1.0 && newProgress > 0.0), // Consider your logic for route completion
               'lastUpdated': FieldValue.serverTimestamp(),
             };
 
-            // Perform Firestore update
-            // Using try-catch specifically for the Firestore operation might be useful
             try {
               await FirebaseFirestore.instance
                   .collection('busActivity')
                   .doc(busId)
                   .set(busActivityData, SetOptions(merge: true));
-              // debugPrint('Firestore updated for $busId at tick ${t.tick}'); // Optional log
+              // debugPrint('Firestore updated for $busId at tick ${t.tick}');
             } catch (fsError) {
               debugPrint('Firestore update failed for $busId: $fsError');
-              // Decide how to handle Firestore errors (e.g., retry later?)
+              // Handle error
             }
           }
 

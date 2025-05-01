@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
-import 'package:smart_move/widgets/nav_bar.dart'; // Assuming nav_bar.dart exists
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_move/screens/bus_data_service.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
@@ -45,16 +44,102 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   ScrollController? _sheetScrollController;
   bool _isBusyRecording = false;
   bool _isMicButtonPressed = false;
+  Map<String,LatLng>   _stopLocations     = {};
+  Map<String,int>      _crowdLevels       = {};
 
   List<Map<String,dynamic>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 
   List<String> _lastCandidates = [];
   int _lastIndex = 0;
+  /// 1) Load bus stop coords & crowd levels once
+  Future<void> _loadStaticData() async {
+    final stopsSnap = await FirebaseFirestore.instance.collection('busStops').get();
+    for (var d in stopsSnap.docs) {
+      final p = d['location'] as GeoPoint;
+      _stopLocations[d.id] = LatLng(p.latitude, p.longitude);
+      _crowdLevels[d.id]   = (d['crowd'] as num).toInt();
+    }
+  }
+  void _listenToBusActivity() {
+    FirebaseFirestore.instance
+        .collection('busActivity')
+        .snapshots()
+        .listen((snap) {
+      final assign = <String, String>{};
+      final segs = <String, List<Map<String, dynamic>>>{};
+
+      for (var d in snap.docs) {
+        try {
+          final data = d.data();
+          final busCode = data['busCode'] as String?;
+          // --- Read the 'stops' field as a List ---
+          final stopsListRaw = data['stops'] as List?;
+
+          if (busCode != null) {
+            assign[d.id] = busCode;
+
+            // --- Process the new structured stops list ---
+            if (stopsListRaw != null) {
+              final List<Map<String, dynamic>> currentBusStopsData = [];
+              for (var item in stopsListRaw) {
+                if (item is Map) {
+                  // Safely extract data from each map in the list
+                  final name = item['name'] as String?;
+                  final etaRaw = item['eta'];
+                  final crowdRaw = item['crowd'];
+
+                  final int etaValue = (etaRaw is num) ? etaRaw.toInt() : -1;
+                  final int crowdValue = (crowdRaw is num) ? crowdRaw.toInt() : 0;
+
+                  if (name != null) {
+                    currentBusStopsData.add({
+                      'name': name,
+                      'eta': etaValue,
+                      'crowd': crowdValue,
+                    });
+                  } else {
+                    debugPrint("⚠️ busActivity doc ${d.id}: Found stop map without 'name'. Skipping item.");
+                  }
+                } else {
+                  debugPrint("⚠️ busActivity doc ${d.id}: Item in 'stops' list is not a Map. Skipping item.");
+                }
+              }
+              segs[d.id] = currentBusStopsData; // Assign the processed list
+            } else {
+              debugPrint("⚠️ busActivity doc ${d.id}: 'stops' field is missing or null. Assigning empty list.");
+              segs[d.id] = []; // Assign empty list if 'stops' field is bad
+            }
+            // --- End processing ---
+
+          } else {
+            debugPrint("⚠️ Document ${d.id} in busActivity missing 'busCode'.");
+          }
+        } catch (e) {
+          debugPrint("Error processing document ${d.id} in _listenToBusActivity: $e");
+          // Assign empty list on error for this bus
+          if (assign.containsKey(d.id)) { // Check if assignment was successful before trying to add empty segs
+            segs[d.id] = [];
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _busAssignments = assign;
+          _activeBusSegments = segs; // Update state with the new structured data
+        });
+      }
+    }, onError: (error) {
+      debugPrint("Error listening to busActivity snapshots: $error");
+    });
+  }
 
   @override
   void initState() {
     super.initState();
+    _loadStaticData();
+    _listenToBusActivity();
     if (widget.initialLocation != null) {
       _currentLocation = widget.initialLocation;
     } else {
@@ -63,40 +148,39 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     _loadBusStopsFromFirestore();
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
-    if (widget.busTrackerData != null) {
-      // Use type checking and provide defaults
-      var segments = widget.busTrackerData!['busSegments'];
-      if (segments is Map) {
-        // Ensure keys are String and values are List<Map<String, dynamic>>
-        _activeBusSegments = Map<String, List<Map<String, dynamic>>>.fromEntries(
-            segments.entries.where((entry) => entry.value is List).map((entry) {
-              // Ensure inner list contains Maps
-              var list = List<Map<String, dynamic>>.from(
-                  (entry.value as List).where((item) => item is Map).map((item) => Map<String, dynamic>.from(item as Map))
-              );
-              return MapEntry(entry.key.toString(), list);
-            })
-        );
-      } else {
-        _activeBusSegments = {}; // Default to empty if type is wrong
-        debugPrint("Warning: busTrackerData['busSegments'] was not a Map.");
+    Future<({
+    List<Map<String,dynamic>> stops,
+    Map<String,String> assignments,
+    Map<String,List<Map<String,dynamic>>> segments
+    })> _fetchBusContext() async {
+      // 1) all known stops with geo & crowd
+      final stopsSnap = await FirebaseFirestore.instance.collection('busStops').get();
+      final stops = stopsSnap.docs.map((d) {
+        final data = d.data();
+        final geo  = data['location'] as GeoPoint;
+        return {
+          'name': data['name'],
+          'location': LatLng(geo.latitude, geo.longitude),
+          'crowd': data['crowd'] as int,
+          'eta':   data['eta'] as int,
+        };
+      }).toList();
+
+      // 2) current busActivity
+      final actSnap = await FirebaseFirestore.instance.collection('busActivity').get();
+      final assignments = <String,String>{};
+      final segments    = <String,List<Map<String,dynamic>>>{};
+
+      for (var doc in actSnap.docs) {
+        final d      = doc.data();
+        final busId  = doc.id;
+        assignments[busId] = d['busCode'] as String;
+        segments[busId] = List<Map<String,dynamic>>.from(d['stops'] as List);
       }
-      var assignments = widget.busTrackerData!['busAssignments'];
-      if (assignments is Map) {
-        // Ensure keys and values are Strings
-        _busAssignments = Map<String, String>.fromEntries(
-            assignments.entries.map((entry) => MapEntry(entry.key.toString(), entry.value.toString()))
-        );
-      } else {
-        _busAssignments = {}; // Default to empty if type is wrong
-        debugPrint("Warning: busTrackerData['busAssignments'] was not a Map.");
-      }
-      debugPrint("Initialized with busAssignments: $_busAssignments");
-      debugPrint("Initialized with activeBusSegments: $_activeBusSegments");
-    } else {
-      debugPrint("Warning: busTrackerData was null when initializing LiveCrowdScreen.");
-      // Keep them as empty maps initialized above
+
+      return (stops: stops, assignments: assignments, segments: segments);
     }
+
 
     FirebaseAuth.instance.authStateChanges().listen((user) {
       setState(() {
@@ -177,6 +261,8 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
         ..sort((a,b) => (b['crowd'] as int).compareTo(a['crowd'] as int));
     });
   }
+  /// Push the live state of one bus into Firestore
+
 
   Future<void> _pickImage() async {
     try {
@@ -211,10 +297,7 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       // Trigger the API call with the image path, instruction, and context
       _sendImageQueryToGemini(
           imagePath, // Pass the image path
-          imageInstruction,
-          _busStops, // Pass current nearby stops
-          _busAssignments, // Pass current bus assignments
-          _activeBusSegments // Pass current bus segments/locations
+          imageInstruction,// Pass current bus segments/locations
       );
       // --- <<< END OF MISSING CALL <<< ---
 
@@ -300,15 +383,9 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   """;
   }
 
-  // --- Place this ENTIRE function inside the _LiveCrowdScreenState class ---
-// --- Replacing the previous version you have ---
-
   Future<void> _sendImageQueryToGemini(
       String imagePath,
-      String baseInstruction,
-      List<Map<String, dynamic>> currentStops,
-      Map<String, String> currentBusAssignments,
-      Map<String, List<Map<String, dynamic>>> currentActiveBusSegments
+      String baseInstruction
       ) async {
 
     final analyzingMessageId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -345,6 +422,11 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
     }
 
     try {
+      final ctx = await _fetchBusContext();
+      final List<Map<String,dynamic>> freshStops = ctx['stops'] as List<Map<String,dynamic>>;
+      final Map<String,String> freshAssignments = ctx['assignments'] as Map<String,String>;
+      final Map<String,List<Map<String,dynamic>>> freshSegments = ctx['segments'] as Map<String,List<Map<String,dynamic>>>;
+
       final imageFile = File(imagePath);
       if (!await imageFile.exists()) throw Exception("Image file does not exist at path: $imagePath");
       final imageBytes = await imageFile.readAsBytes();
@@ -358,10 +440,10 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
 
       final fullPrompt = _buildEnhancedImagePrompt(
           baseInstruction,
-          currentStops,
-          currentBusAssignments,
-          currentActiveBusSegments
-      ); // Assumes _buildEnhancedImagePrompt function exists
+          freshStops,           // Use fresh data
+          freshAssignments,     // Use fresh data
+          freshSegments         // Use fresh data
+      );
 
       final requestBody = jsonEncode({
         "contents": [{"parts": [{"text": fullPrompt}, {"inlineData": {"mimeType": mimeType, "data": base64Image}}] }],
@@ -414,21 +496,25 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
 
         if (overrideApplied && correctNearbyStopName != null) {
           debugPrint("Attempting to find data for override stop: '$correctNearbyStopName'");
-          debugPrint("Available stop names in currentStops: ${currentStops.map((s) => s['name']).toList()}");
+          // Use the freshStops fetched earlier in the function
+          debugPrint("Available stop names in freshStops: ${freshStops.map((s) => s['name']).toList()}");
 
-          final correctStopData = currentStops.firstWhere(
+          final correctStopData = freshStops.firstWhere(
                 (stop) =>
             stop['name']?.toString().trim().toLowerCase() ==
                 correctNearbyStopName!.trim().toLowerCase(),
-            orElse: () => <String, Object>{},
+            orElse: () => <String, dynamic>{}, // Ensure consistent return type
           );
 
           if (correctStopData.isNotEmpty) {
             debugPrint("Successfully found data for override stop: $correctNearbyStopName");
-            final crowd = correctStopData['crowd'] ?? '?';
-            final eta = correctStopData['eta'] ?? '?';
-            final servingBuses = currentBusAssignments.entries
-                .where((entry) => (currentActiveBusSegments[entry.key] ?? []).any((s) => s['name'] == correctNearbyStopName))
+            final crowdRaw = correctStopData['crowd'];
+            final etaRaw = correctStopData['eta'];
+            final crowd = (crowdRaw is int) ? crowdRaw : '?'; // Check type before using
+            final eta = (etaRaw is int) ? etaRaw : '?';
+
+            final servingBuses = freshAssignments.entries
+                .where((entry) => (freshSegments[entry.key] ?? []).any((s) => s['name'] == correctNearbyStopName))
                 .map((e) => e.value)
                 .toList();
             String displayIdentifiedName = identifiedLocationForMsg ?? "the identified location";
@@ -683,10 +769,7 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
         // Trigger the API call (this will handle adding "Analyzing..." and the final response)
         _sendAudioQueryToGemini(
             recordedPath,
-            audioInstruction,
-            _busStops, // Pass current nearby stops
-            _busAssignments, // Pass current bus assignments
-            _activeBusSegments // Pass current bus segments/locations
+            audioInstruction
         );
 
         // --- <<< END OF NEW CALL <<< ---
@@ -717,11 +800,7 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
   } // End of _stopAndSendRecording
   // --- NEW METHOD: Sends Audio + Prompt to Gemini ---
   Future<void> _sendAudioQueryToGemini(String audioPath,
-      String baseInstruction,
-      // Add parameters for context data
-      List<Map<String, dynamic>> currentStops,
-      Map<String, String> currentBusAssignments,
-      Map<String, List<Map<String, dynamic>>> currentActiveBusSegments) async {
+      String baseInstruction) async {
     // --- Safety check for audio path ---
     if (audioPath.isEmpty) {
       debugPrint("Error: Audio path is empty.");
@@ -755,7 +834,24 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
 
 
     try {
-      // --- Read and Encode Audio File ---
+      final ctx = await _fetchBusContext();
+      final List<Map<String,dynamic>> freshStops = ctx['stops'] as List<Map<String,dynamic>>;
+      final Map<String,String> freshAssignments = ctx['assignments'] as Map<String,String>;
+      final Map<String,dynamic> fetchedSegmentsRaw = ctx['segments'];
+      final Map<String,List<Map<String,dynamic>>> freshSegments = {};
+      fetchedSegmentsRaw.forEach((key, value) {
+        if (value is List) {
+          // Attempt to cast, handle potential errors if list items aren't maps
+          try {
+            freshSegments[key] = List<Map<String,dynamic>>.from(value.map((item) => item as Map<String,dynamic>));
+          } catch (e) {
+            debugPrint("Warning: Could not cast segments for $key in _sendAudioQueryToGemini. Items might not be Maps.");
+            freshSegments[key] = []; // Assign empty list on error
+          }
+        } else {
+          freshSegments[key] = [];
+        }
+      });
       final audioFile = File(audioPath);
       if (!await audioFile.exists()) {
         throw Exception("Audio file does not exist at path: $audioPath");
@@ -765,9 +861,9 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
       final mimeType = "audio/m4a";
       final fullPrompt = _buildEnhancedAudioPrompt(
           baseInstruction,
-          currentStops,
-          currentBusAssignments,
-          currentActiveBusSegments
+          freshStops,
+          freshAssignments,
+          freshSegments
       );
       debugPrint("--- Sending Audio Prompt to AI ---");
       debugPrint(fullPrompt);
@@ -844,6 +940,91 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
       });
     }
   }
+  Future<Map<String, dynamic>> _fetchBusContext() async {
+    // a) all stops
+    List<Map<String, dynamic>> stops = [];
+    Map<String, String> assignments = {};
+    Map<String, List<Map<String, dynamic>>> segments = {};
+
+    try {
+      // a) Fetch busStops (this remains the same, reads crowd/eta from busStops collection)
+      final stopsSnap = await FirebaseFirestore.instance.collection('busStops').get();
+      stops = stopsSnap.docs.map((d) {
+        final data = d.data();
+        final p = data['location'] as GeoPoint?;
+        final crowdRaw = data['crowd'];
+        final etaRaw = data['eta'];
+        final int crowdValue = (crowdRaw is num) ? crowdRaw.toInt() : 0;
+        final int etaValue = (etaRaw is num) ? etaRaw.toInt() : -1;
+        return {
+          'name': data['name'] ?? 'Unknown Stop',
+          'location': (p != null) ? LatLng(p.latitude, p.longitude) : LatLng(0, 0),
+          'crowd': crowdValue, // Crowd from busStops collection
+          'eta': etaValue,     // ETA from busStops collection (might be different from busActivity)
+        };
+      }).toList();
+
+      // b) Fetch live busActivity (assignments & the NEW stops structure)
+      final actSnap = await FirebaseFirestore.instance.collection('busActivity').get();
+      assignments = <String, String>{};
+      segments = <String, List<Map<String, dynamic>>>{}; // Initialize for new structure
+
+      for (var doc in actSnap.docs) {
+        final d = doc.data();
+        final busId = doc.id;
+        final busCode = d['busCode'] as String?;
+        // --- Read the 'stops' field as a List ---
+        final stopsListRaw = d['stops'] as List?;
+
+        if (busCode != null) {
+          assignments[busId] = busCode;
+
+          // --- Process the new structured stops list from busActivity ---
+          if (stopsListRaw != null) {
+            final List<Map<String, dynamic>> currentBusStopsData = [];
+            for (var item in stopsListRaw) {
+              if (item is Map) {
+                final name = item['name'] as String?;
+                final etaRaw = item['eta']; // ETA from busActivity
+                final crowdRaw = item['crowd']; // Crowd from busActivity
+
+                final int etaValue = (etaRaw is num) ? etaRaw.toInt() : -1;
+                final int crowdValue = (crowdRaw is num) ? crowdRaw.toInt() : 0;
+
+                if (name != null) {
+                  currentBusStopsData.add({
+                    'name': name,
+                    'eta': etaValue,     // Use ETA from busActivity
+                    'crowd': crowdValue, // Use Crowd from busActivity
+                  });
+                } else {
+                  debugPrint("⚠️ _fetchBusContext: Found stop map without 'name' in busActivity/${doc.id}. Skipping item.");
+                }
+              } else {
+                debugPrint("⚠️ _fetchBusContext: Item in 'stops' list in busActivity/${doc.id} is not a Map. Skipping item.");
+              }
+            }
+            segments[busId] = currentBusStopsData; // Assign the processed list
+          } else {
+            debugPrint("⚠️ _fetchBusContext: 'stops' field missing/null in busActivity/${doc.id}. Assigning empty list.");
+            segments[busId] = [];
+          }
+          // --- End processing ---
+        } else {
+          debugPrint("⚠️ _fetchBusContext: Missing 'busCode' in busActivity/${doc.id}. Skipping.");
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching bus context: $e");
+      return { 'stops': [], 'assignments': {}, 'segments': {}, };
+    }
+
+    return {
+      'stops': stops, // This is still the list from busStops collection
+      'assignments': assignments,
+      'segments': segments, // This now holds the List<Map{name, eta, crowd}> from busActivity
+    };
+  }
 
   // --------------------- VERTEX AI CALL (Returning Multiple Candidates) ----------------------------- //
   Future<String> _callVertexAIPrediction(String prompt) async {
@@ -892,104 +1073,185 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
   }
   String _buildEnhancedPrompt(
       String query,
-      List<Map<String, dynamic>> stops,
-      // Add the missing parameters here:
-      Map<String, String> busAssignments,
+      List<Map<String, dynamic>> stops, // Use parameter
+      Map<String, String> busAssignments, // Use parameter
       Map<String, List<Map<String, dynamic>>> activeBusSegments
       ) {
     final limitedStops = stops.take(5).toList();
     String busInfo = "ACTIVE BUSES:\n";
     _busAssignments.forEach((busId, busCode) {
-      final stopsForBus = _activeBusSegments[busId] ?? [];
+      final stopsDataForBus = (activeBusSegments ?? {})[busId] ?? [];
+      final stopNamesString = stopsDataForBus.map((s) => s['name'] ?? 'Unknown').join(' → ');
+      final nextStopName = stopsDataForBus.isNotEmpty ? (stopsDataForBus.first['name'] ?? 'Unknown') : 'None';
       busInfo += """
   🚌 $busCode
-  - Current Stops: ${stopsForBus.map((s) => s['name']).join(' → ')}
-  - Next Stop: ${stopsForBus.isNotEmpty ? stopsForBus.first['name'] : 'None'}
+  - Current Stops: $stopNamesString
+  - Next Stop: $nextStopName
   
   """;
     });
 
-    final stopsInfo = stops.map((stop) {
+    final stopsInfo = (stops ?? []).map((stop) {
       // Find which buses serve this stop
-      final servingBuses = _busAssignments.entries.where((entry) {
-        final busStops = _activeBusSegments[entry.key] ?? [];
-        return busStops.any((s) => s['name'] == stop['name']);
+      final stopName = stop['name'] as String?;
+      if (stopName == null) return "";
+      final servingBuses = (busAssignments ?? {}).entries.where((entry) {
+        final busStopsData = (activeBusSegments ?? {})[entry.key] ?? [];
+        return busStopsData.any((s) => s['name'] == stopName);
       }).map((e) => e.value).toList();
 
+      // Ensure crowd and eta are handled safely if potentially null
+      final crowd = stop['crowd'] ?? '?';
+      final eta = stop['eta'] ?? '?';
+
       return """
-    🚏 ${stop['name']}
-    - 👥 Crowd: ${stop['crowd']} people
-    - ⏱️ ETA: ${stop['eta']} minutes
+    🚏 ${stop['name'] ?? 'Unknown'}
+    - 👥 Crowd: $crowd people
+    - ⏱️ ETA: $eta minutes
     - 🚌 Serving Buses: ${servingBuses.isNotEmpty ? servingBuses.join(', ') : 'None'}
     """;
     }).join('\n');
 
+    String liveStopDetails = "LIVE STOP DETAILS (from active buses):\n";
+    (activeBusSegments ?? {}).forEach((busId, stopsData) {
+      final busCode = busAssignments[busId] ?? 'Unknown Bus';
+      liveStopDetails += "For Bus $busCode:\n";
+      if (stopsData.isEmpty) {
+        liveStopDetails += "  - No stop data available.\n";
+      } else {
+        stopsData.forEach((stopData) {
+          liveStopDetails += "  - 🚏 ${stopData['name'] ?? 'Unknown'}: Crowd: ${stopData['crowd'] ?? '?'}, ETA: ${stopData['eta'] ?? '?'} min\n";
+        });
+      }
+    });
+
+    // Construct the final prompt string using busInfo, stopsInfo, and query
     return """
-  You are SmartMove, an expert public transportation assistant in Malaysia. 
+  You are SmartMove, an expert public transportation assistant in Gelugor, Penang, Malaysia.
   Provide concise, actionable advice based on this real-time data:
 
+  CONTEXT:
   $busInfo
 
-  CURRENT BUS STOPS NEAR USER:
+  GENERAL BUS STOP INFO (may be slightly delayed):
   $stopsInfo
+
+  LIVE STOP DETAILS (ETA/Crowd from active buses):
+  $liveStopDetails
 
   USER'S QUESTION: $query
 
   RESPONSE REQUIREMENTS:
-  1. Start with most relevant recommendation including specific bus number
-  2. Include specific stop names and crowd levels
-  3. Mention ETAs and serving buses
-  4. Keep response under 200 words
-  5. Format clearly with emojis
-  6. Always show the same crowd numbers as displayed on the map
-
-  EXAMPLE RESPONSE:
-  "🚍 Best option: Take Bus B2 from Aman Damai (15 people, 5 min ETA). 
-  🚶 Alternative: Walk to BHEPA (10 min) if you want to avoid crowds."
+  1. Understand the user's question.
+  2. Use the provided CONTEXT and LIVE STOP DETAILS primarily for real-time info (ETA/Crowd). Use GENERAL BUS STOP INFO for location/serving buses if needed.
+  3. Start with the most relevant recommendation including specific bus number/code (e.g., A1, B2).
+  4. Include specific stop names, **live** crowd levels, and **live** ETAs from the LIVE STOP DETAILS section.
+  5. Keep response concise and clear.
+  6. Format clearly with emojis.
 
   NOW ANSWER THE USER'S QUESTION:
   """;
   }
 
+
   void _sendUserQuery(String query) async {
     if (query.trim().isEmpty) return;
 
-    // Clear input and update UI immediately
-    _chatController.clear();
-    setState(() {
-      _chatHistory.add({"sender": "user", "message": query});
-      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing..."});
-    });
+    // Add user message and placeholder immediately
+    final userMessage = {"sender": "user", "message": query};
+    final analyzingMessage = {"sender": "ai", "message": "🔄 Analyzing..."};
+    // Create a temporary ID to easily find the analyzing message later
+    final analyzingMessageId = analyzingMessage.hashCode.toString() + DateTime.now().millisecondsSinceEpoch.toString();
+    analyzingMessage["id"] = analyzingMessageId; // Add ID to the map
+
+    _chatController.clear(); // Clear input field
+    if (mounted) { // Check mounted before initial setState
+      setState(() {
+        _chatHistory.add(userMessage);
+        _chatHistory.add(analyzingMessage);
+      });
+      // Scroll to bottom after adding messages
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_sheetScrollController?.hasClients ?? false) {
+          _sheetScrollController?.animateTo(
+            _sheetScrollController!.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } else {
+      return; // Don't proceed if not mounted
+    }
 
 
     try {
-      final stops = _busStops;
-      final assignments = _busAssignments;
-      final segments = _activeBusSegments;
-      if (stops.isEmpty) throw Exception('No bus stop data');
-      if (assignments.isEmpty) {
-        debugPrint('Bus assignment data is empty. Check data passing from BusTracker.');
-        throw Exception('LiveCrowd has no bus assignment data – did you forget to pass it or is it empty?');
-      }
-      final enhancedPrompt = _buildEnhancedPrompt(query, stops, assignments, segments);
+      // Fetch context (this part seems okay now with previous fixes)
+      final ctx = await _fetchBusContext();
+      final stops = ctx['stops'] as List<Map<String, dynamic>>;
+      final assignments = ctx['assignments'] as Map<String, String>;
+      final segments = ctx['segments'] as Map<String, List<Map<String, dynamic>>>;
 
-      final response = await _callVertexAIPrediction(enhancedPrompt);
-      // Ensure we remove the "Analyzing..." message
+      final prompt = _buildEnhancedPrompt(
+        query,
+        stops,
+        assignments,
+        segments,
+      );
+
+      // Call the API
+      debugPrint("--- Calling AI for Text Query ---");
+      final response = await _callVertexAIPrediction(prompt);
+      debugPrint("--- AI Response Received for Text Query ---");
+      debugPrint("Response: $response"); // Log the received response
+
+      // --- FIX: Update UI safely after await ---
+      if (!mounted) return; // Check if still mounted after await
+
+      // Create a new list from the current history
+      final updatedHistory = List<Map<String, dynamic>>.from(_chatHistory);
+      // Find and remove the analyzing message using its ID
+      updatedHistory.removeWhere((msg) => msg["id"] == analyzingMessageId);
+      // Add the actual AI response
+      updatedHistory.add({"sender": "ai", "message": response});
+
+      // Update the state with the new list
       setState(() {
-        // Use the CORRECT type Map<String, dynamic> here
-        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
-          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing...")
-          ..add({"sender": "ai", "message": response});
+        _chatHistory = updatedHistory;
       });
+      debugPrint("Chat history updated with AI response.");
+      // --- END FIX ---
+
     } catch (e) {
-      debugPrint("Chat error: $e");
+      debugPrint("Chat error in _sendUserQuery: $e");
+      if (!mounted) return; // Check if still mounted after await in catch
+
+      // --- FIX: Update UI safely on error ---
+      final updatedHistory = List<Map<String, dynamic>>.from(_chatHistory);
+      // Find and remove the analyzing message using its ID
+      updatedHistory.removeWhere((msg) => msg["id"] == analyzingMessageId);
+      // Add the error message
+      updatedHistory.add({
+        "sender": "ai",
+        "message": "⚠️ Error: ${e.toString().replaceAll('Exception: ', '')}"
+      });
+      // Update the state with the new list
       setState(() {
-        _chatHistory = List<Map<String, String>>.from(_chatHistory)
-          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing...")
-          ..add({
-            "sender": "ai",
-            "message": "⚠️ Error: ${e.toString().replaceAll('Exception: ', '')}"
-          });
+        _chatHistory = updatedHistory;
+      });
+      debugPrint("Chat history updated with error message.");
+      // --- END FIX ---
+
+    } finally {
+      // Scroll to bottom after response/error is processed
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && (_sheetScrollController?.hasClients ?? false)) {
+          _sheetScrollController?.animateTo(
+            _sheetScrollController!.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
       });
     }
   }

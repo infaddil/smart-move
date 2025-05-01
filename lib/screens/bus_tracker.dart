@@ -345,158 +345,249 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
 
   final Map<String, double> _busSpeeds = {
     'A1': 1.0,
-    'A2': 1.2,
-    'B1': 0.9,
-    'B2': 1.1,
-    'C1': 1.0,
-    'C2': 0.8,
+    'A2': 1.3,
+    'B1': 1.4,
+    'B2': 1.6,
+    'C1': 1.9,
+    'C2': 0.9,
   };
 
   // In _BusTrackerScreenState
 
   void _startBusAnimations() {
-    print(">>> _startBusAnimations Called"); // Add this
-    // Only stop *old* timers if necessary, maybe we want to keep existing ones?
-    // Option 1: Keep existing timers if they exist (most likely desired for resume)
-    // _stopBusAnimations(); // <-- REMOVE or COMMENT OUT this line if you want timers to persist
-
     _busAssignments.forEach((busId, code) {
-      // Check if a timer ALREADY exists for this bus. If so, skip starting a new one.
       if (_busTimers.containsKey(busId) && _busTimers[busId]!.isActive) {
-        print("Timer already active for $busId, skipping new timer creation.");
-        // Ensure the position exists from the kept-alive state
+        // (Existing logic to handle already active timers)
         if (_busPositions[busId] == null && _busPaths[busId] != null && _busPaths[busId]!.isNotEmpty) {
-          // If position somehow got lost, reset based on progress
           final path = _busPaths[busId]!;
           final progress = _busProgress[busId] ?? 0.0;
           final segmentLength = path.length > 1 ? path.length - 1 : 1;
           final segmentIndex = (progress * segmentLength).floor().clamp(0, path.length - 2);
           final segmentProgress = (progress * segmentLength) - segmentIndex;
           final start = path[segmentIndex];
-          final end = path[segmentIndex + 1]; // Safe due to clamp
+          final end = path[segmentIndex + 1];
           _busPositions[busId] = LatLng(
             start.latitude + (end.latitude - start.latitude) * segmentProgress,
             start.longitude + (end.longitude - start.longitude) * segmentProgress,
           );
           _busIndex[busId] = segmentIndex;
-          print("Re-initialized position for $busId based on progress $progress");
         }
-        return; // Skip to the next bus
+        return; // Skip starting a new timer
       }
 
-      // If no active timer, proceed to setup (or resume if state partially exists)
       final path = _busPaths[busId];
       if (path == null || path.isEmpty) {
-        debugPrint("⚠️ No path for bus $busId ($code), skipping animation start.");
+        debugPrint("Path is null or empty for $busId ($code). Skipping animation start.");
         return;
       }
 
-      // --- Initialize state ONLY IF IT DOESN'T EXIST ---
+      // --- Initialize state if it doesn't exist ---
       if (!_busPositions.containsKey(busId)) {
         _busPositions[busId] = path[0];
-        print("Initialized position for $busId");
       }
       if (!_busIndex.containsKey(busId)) {
         _busIndex[busId] = 0;
-        print("Initialized index for $busId");
       }
       if (!_busProgress.containsKey(busId)) {
         _busProgress[busId] = 0.0;
-        print("Initialized progress for $busId");
       }
       // --- End Initialization Check ---
 
-      // Use the potentially existing (kept-alive) or newly initialized values
-      final currentPosition = _busPositions[busId]!;
-      final currentIndex = _busIndex[busId]!;
-      final currentProgress = _busProgress[busId]!; // Already defaults to 0.0 if initialized above
-
-      print("Starting animation for $busId from progress: $currentProgress, index: $currentIndex, position: $currentPosition");
-
-
-
-      double totalDistance = 0;
-      for (int i = 0; i < path.length - 1; i++) {
-        totalDistance += Geolocator.distanceBetween(
-          path[i].latitude, path[i].longitude,
-          path[i+1].latitude, path[i+1].longitude,
-        );
-      }
       final speedModifier = _busSpeeds[code] ?? 1.0;
-      // ... (your duration calculation) ...
 
-      // --- Start the timer ---
-      // Clear any old, inactive timer entry for this bus first
-      _busTimers[busId]?.cancel();
-      print(">>> Setting up NEW timer for $busId. Initial Progress: ${_busProgress[busId]}");
+      final averageSpeedMetersPerSecond = 6.0 * speedModifier;
+      // --- END SPEED ADJUSTMENT ---
 
-      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) async {
+      // --- Calculate total path distance once ---
+      double totalPathDistance = 0;
+      if (path.length > 1) {
+        for (int i = 0; i < path.length - 1; i++) {
+          totalPathDistance += Geolocator.distanceBetween(
+              path[i].latitude, path[i].longitude,
+              path[i+1].latitude, path[i+1].longitude
+          );
+        }
+      }
+      // --- End Path Distance Calculation ---
+
+
+      _busTimers[busId]?.cancel(); // Cancel any previous inactive timer entry
+
+      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 800), (t) async { // Your 800ms interval
         if (!mounted) {
           t.cancel();
-          _busTimers.remove(busId); // Clean up timer reference
+          _busTimers.remove(busId);
           return;
         }
 
         try {
-          // Use the progress from the map, critical for state preservation
-          final progress = _busProgress[busId] ?? 0.0; // Default to 0.0 if somehow null
-          final segmentLength = path.length > 1 ? path.length - 1 : 1;
-
-          // Calculate new progress (ensure it uses the current value)
-          double newProgress = progress + (0.0005 * speedModifier); // Adjust step as needed
-
-          // --- Route Completion Logic ---
-          if (newProgress >= 1.0) {
-            print("Bus $busId completed route. Resetting progress.");
-            newProgress = 0.0; // Reset progress for next loop
-
-            // Optional: Implement logic here to fetch new assignments or wait
-            // For now, it just loops back to the start
+          final currentPath = _busPaths[busId]; // Re-fetch in case it changes? Unlikely here.
+          if (currentPath == null || currentPath.isEmpty) {
+            debugPrint("Path became null or empty for $busId in timer. Stopping timer.");
+            t.cancel();
+            _busTimers.remove(busId);
+            return;
           }
 
-          // Find current segment and position within segment
-          final segmentIndex = (newProgress * segmentLength).floor().clamp(0, path.length - 2); // Clamp to avoid index out of bounds
+          final currentProgress = _busProgress[busId] ?? 0.0;
+          final segmentLength = currentPath.length > 1 ? currentPath.length - 1 : 1;
+
+          // --- CORRECTED Distance Increment Calculation ---
+          // Use the timer interval (0.8 seconds), NOT t.tick
+          double estimatedDistanceIncrement = averageSpeedMetersPerSecond * 0.8; // 0.8 seconds = 800ms
+          // --- END CORRECTION ---
+
+          // Calculate progress increment based on distance
+          double progressIncrement = 0.0;
+          if (totalPathDistance > 0) {
+            progressIncrement = estimatedDistanceIncrement / totalPathDistance;
+          } else {
+            // Handle zero distance path - maybe advance slowly?
+            progressIncrement = 0.0005; // Fallback small increment
+          }
+
+          double newProgress = currentProgress + progressIncrement;
+
+          if (newProgress >= 1.0) {
+            newProgress = 0.0; // Reset progress or handle route completion
+          }
+
+          // Calculate position based on new progress
+          final segmentIndex = (newProgress * segmentLength).floor().clamp(0, currentPath.length - 2);
           final segmentProgress = (newProgress * segmentLength) - segmentIndex;
 
-          // Calculate exact position
-          final start = path[segmentIndex];
-          final end = path[segmentIndex + 1]; // Safe due to clamp
+          final start = currentPath[segmentIndex];
+          final end = currentPath[segmentIndex + 1];
 
           final currentPos = LatLng(
             start.latitude + (end.latitude - start.latitude) * segmentProgress,
             start.longitude + (end.longitude - start.longitude) * segmentProgress,
           );
 
-          // Only call updateBusStops if needed, maybe not every tick?
-          // await _updateBusStops(); // Consider frequency
+          // --- REDUCED FIRESTORE UPDATE ---
+          // Update roughly every 8 seconds (10 ticks * 800ms interval)
+          // Also check if progress actually changed to avoid unnecessary writes on reset/pause
+          if (t.tick % 10 == 0 && newProgress != currentProgress) {
+            final String routeLetter = code[0];
+            final List<String> stopNames = _routes[routeLetter] ?? [];
+            final Map<String, int> etaMap = {}; // Keep your ETA calculation logic here
 
-          // Update state ONLY if values changed to minimize rebuilds
+            // --- ETA Calculation Logic START (Keep your existing logic here) ---
+            if (stopNames.isNotEmpty && _stopLocations.isNotEmpty) {
+              int currentStopIndexOnRoute = -1;
+              double cumulativeLength = 0;
+              for(int i=0; i < currentPath.length -1; ++i){
+                cumulativeLength += Geolocator.distanceBetween(currentPath[i].latitude, currentPath[i].longitude, currentPath[i+1].latitude, currentPath[i+1].longitude);
+                if(i >= segmentIndex) break;
+              }
+              double targetLength = cumulativeLength + (Geolocator.distanceBetween(start.latitude, start.longitude, end.latitude, end.longitude) * segmentProgress);
+
+              double lengthAlongOriginalStops = 0;
+              List<LatLng> originalStopCoords = stopNames.map((name) => _stopLocations[name]).whereType<LatLng>().toList();
+
+              for(int i=0; i < originalStopCoords.length -1; ++i){
+                double stopSegmentLength = Geolocator.distanceBetween(originalStopCoords[i].latitude, originalStopCoords[i].longitude, originalStopCoords[i+1].latitude, originalStopCoords[i+1].longitude);
+                if(lengthAlongOriginalStops + stopSegmentLength >= targetLength || i == originalStopCoords.length - 2){
+                  currentStopIndexOnRoute = i;
+                  break;
+                }
+                lengthAlongOriginalStops += stopSegmentLength;
+              }
+
+              for (int i = 0; i < stopNames.length; i++) {
+                final stopName = stopNames[i];
+                final stopLoc = _stopLocations[stopName];
+                if (stopLoc != null && i > currentStopIndexOnRoute) {
+                  double distanceToStop = 0;
+                  if(i == currentStopIndexOnRoute + 1 && currentStopIndexOnRoute < originalStopCoords.length -1) {
+                    distanceToStop += Geolocator.distanceBetween(currentPos.latitude, currentPos.longitude, originalStopCoords[i].latitude, originalStopCoords[i].longitude);
+                  } else if (i > currentStopIndexOnRoute + 1 && currentStopIndexOnRoute < originalStopCoords.length -1) {
+                    distanceToStop += Geolocator.distanceBetween(currentPos.latitude, currentPos.longitude, originalStopCoords[currentStopIndexOnRoute+1].latitude, originalStopCoords[currentStopIndexOnRoute+1].longitude);
+                    for(int j = currentStopIndexOnRoute + 1; j < i; ++j){
+                      if (j < originalStopCoords.length - 1) {
+                        distanceToStop += Geolocator.distanceBetween(originalStopCoords[j].latitude, originalStopCoords[j].longitude, originalStopCoords[j+1].latitude, originalStopCoords[j+1].longitude);
+                      }
+                    }
+                  }
+                  if (distanceToStop > 0 && averageSpeedMetersPerSecond > 0) {
+                    final etaSeconds = distanceToStop / averageSpeedMetersPerSecond;
+                    etaMap[stopName] = (etaSeconds / 60).round();
+                  } else {
+                    etaMap[stopName] = 0;
+                  }
+                } else if (i <= currentStopIndexOnRoute) {
+                  etaMap[stopName] = -1;
+                }
+              }
+            }
+            // --- ETA Calculation Logic END ---
+            final List<Map<String, dynamic>> stopsData = [];
+            for (String stopName in stopNames) {
+              // Get ETA from the calculated map (default to -1 if not found/passed)
+              final int etaValue = etaMap[stopName] ?? -1;
+              // Get crowd level from the state map (default to 0 if not found)
+              // Note: _crowdLevels might be stale if not updated frequently.
+              final int crowdValue = _crowdLevels[stopName] ?? 0;
+
+              stopsData.add({
+                'name': stopName,
+                'eta': etaValue,
+                'crowd': crowdValue,
+              });
+            }
+
+            final Map<String, dynamic> busActivityData = {
+              'busCode': code,
+              // --- >>> USE NEW STRUCTURED LIST <<< ---
+              'stops': stopsData,
+              // --- >>> REMOVE OLD etaMap <<< ---
+              // 'etaMap': etaMap, // Removed, data is now in 'stops' list
+              'currentPosition': GeoPoint(currentPos.latitude, currentPos.longitude),
+              'isActive': (newProgress < 1.0 && newProgress > 0.0),
+              'lastUpdated': FieldValue.serverTimestamp(),
+            };
+
+            // Perform Firestore update
+            // Using try-catch specifically for the Firestore operation might be useful
+            try {
+              await FirebaseFirestore.instance
+                  .collection('busActivity')
+                  .doc(busId)
+                  .set(busActivityData, SetOptions(merge: true));
+              // debugPrint('Firestore updated for $busId at tick ${t.tick}'); // Optional log
+            } catch (fsError) {
+              debugPrint('Firestore update failed for $busId: $fsError');
+              // Decide how to handle Firestore errors (e.g., retry later?)
+            }
+          }
+          // --- END REDUCED FIRESTORE UPDATE ---
+
           if (_busPositions[busId] != currentPos || _busProgress[busId] != newProgress || _busIndex[busId] != segmentIndex) {
-            if (mounted) { // Double check mounted before setState
+            if (mounted) {
               setState(() {
                 _busPositions[busId] = currentPos;
                 _busProgress[busId] = newProgress;
                 _busIndex[busId] = segmentIndex;
               });
             } else {
-              t.cancel(); // Stop timer if widget is no longer mounted
+              t.cancel();
               _busTimers.remove(busId);
             }
           }
 
         } catch (e, stackTrace) {
-          debugPrint('⚠️ Animation error for bus $busId: $e\n$stackTrace');
-          t.cancel();
-          _busTimers.remove(busId); // Clean up timer reference
+          debugPrint('Error in timer calculation/setState for bus $busId: $e\n$stackTrace');
+          // Consider stopping the timer on calculation errors
+          // t.cancel();
+          // _busTimers.remove(busId);
         }
       });
     });
 
-    // Initial build might be needed if state was just created
+    // Initial build might be needed if state was just created or assignments changed
     if (mounted) {
       setState(() {});
     }
-    // --- MODIFICATION END ---
   }
   void _moveBusAlongPath(String busId, List<LatLng> path, Timer timer) {
     if (!mounted) {

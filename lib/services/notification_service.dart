@@ -141,12 +141,6 @@ class NotificationService {
       print("[NotificationService] Error sending notification: $e");
     }
   }
-
-  // Include other methods like initialize, startListening, stopListening, etc., as they are in your file.
-  // Make sure the constants LOW_CROWD_THRESHOLD and PROXIMITY_THRESHOLD_METERS are defined in the class.
-
-  // --- Other necessary methods from your file ---
-
   Future<void> initialize() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
     AndroidInitializationSettings('@mipmap/ic_launcher');

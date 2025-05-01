@@ -5,6 +5,12 @@ import 'dart:math';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:smart_move/widgets/nav_bar.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:smart_move/screens/PaymentWebview.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'dart:typed_data';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class AltRoutesScreen extends StatefulWidget {
   @override
@@ -20,6 +26,7 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   bool lowestHeadcount = false;
   bool bicycle = false;
   bool walking = false;
+  bool scooter = false;
 
   String? selectedDestination;
   String? selectedOrigin;
@@ -130,6 +137,142 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
     if (isBike) return (distanceKm / 15 * 60).round();
     return (distanceKm / 25 * 60).round();
   }
+  Future<void> _navigateToPayment(String provider, double distance) async {
+    // --- Check for necessary data ---
+    final secretKey = dotenv.env['TOYYIBPAY_SECRET_KEY'];
+    final categoryCode = dotenv.env['TOYYIBPAY_CATEGORY_CODE'];
+
+    if (secretKey == null || categoryCode == null) {
+      print('Error: ToyyibPay Secret Key or Category Code not found in .env file');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Payment configuration error.")),
+        );
+      }
+      return; // Stop execution if keys are missing
+    }
+
+    // --- TODO: Get User Details ---
+    // You need the user's name, email, and phone for the ToyyibPay API.
+    // Fetch these from Firestore using _currentUser or use placeholder/default values.
+    String userName = _currentUser?.displayName ?? "Smart Move User"; // Example placeholder
+    String userEmail = _currentUser?.email ?? "user@example.com"; // Example placeholder
+    String userPhone = "0123456789"; // Example placeholder - You might need to fetch this from Firestore
+
+    // --- TODO: Calculate Amount ---
+    // Calculate the price based on the provider and distance.
+    // ToyyibPay expects the amount in *cents* as a String (e.g., "1000" for RM10.00).
+    double priceRM;
+    if (provider == "Beam") {
+      // Example: RM 1.50 base + RM 0.50 per km
+      priceRM = 1.50 + (distance * 0.50);
+    } else if (provider == "Bike Commute USM") {
+      // Example: Flat rate RM 2.00
+      priceRM = 2.00;
+    } else {
+      priceRM = 1.00; // Default fallback?
+    }
+    // Convert RM to cents and then to string
+    String amountInCents = (priceRM * 100).toInt().toString();
+
+
+    // --- Prepare donationData (if needed by PaymentWebView) ---
+    // This seems specific to a donation flow in the original example.
+    // Adapt or remove if not needed for your booking scenario.
+    Map<String, dynamic> bookingData = {
+      'provider': provider,
+      'distance_km': distance.toStringAsFixed(2),
+      'calculated_amount_rm': priceRM.toStringAsFixed(2),
+      'userId': _currentUser?.uid ?? 'unknown',
+      // Add any other data you want to pass to PaymentWebView or use after payment
+    };
+
+    // --- Create ToyyibPay Bill ---
+    try {
+      print('Attempting to create ToyyibPay bill...'); // Debug print
+      final response = await http.post(
+        Uri.parse('https://toyyibpay.com/index.php/api/createBill'),
+        body: {
+          'userSecretKey': secretKey,
+          'categoryCode': categoryCode,
+          'billName': 'Bike Commute: $provider', // More specific name
+          'billDescription': 'Booking for $provider for approx ${distance.toStringAsFixed(2)} km', // More specific description
+          'billPriceSetting': '1', // 0 = Not Fixed, 1 = Fixed Price
+          'billPayorInfo': '1', // 0 = Hide, 1 = Show Payor Info Fields
+          'billAmount': amountInCents, // Amount in cents
+          // --- TODO: Update Return/Callback URLs ---
+          // Use appropriate URLs for your app (deep links or web URLs)
+          'billReturnUrl': 'https://yourdomain.com/payment-success', // Replace with your actual success URL/deeplink
+          'billCallbackUrl': 'https://yourdomain.com/payment-callback', // Replace with your actual callback URL/deeplink
+          'billExternalReferenceNo': 'SM-${provider.substring(0,min(provider.length,3))}-${DateTime.now().millisecondsSinceEpoch}', // Unique ref number
+          'billTo': userName,
+          'billEmail': userEmail,
+          'billPhone': userPhone,
+          'billSplitPayment': '0', // 0 = No Split, 1 = Split Payment Allowed
+          'billPaymentChannel': '0', // 0 = Both FPX & Card, 1 = FPX only, 2 = Card only
+          'billDisplayMerchant': '1' // 0 = Hide Merchant Name, 1 = Show
+          // Optional: 'billContentEmail': 'Thank you for your payment!'
+        },
+      );
+
+      print('ToyyibPay Response Status Code: ${response.statusCode}'); // Debug print
+      print('ToyyibPay Response Body: ${response.body}'); // Debug print
+
+      if (response.statusCode == 200) {
+        // Check if response body is valid JSON and expected format
+        try {
+          final data = jsonDecode(response.body);
+          // ToyyibPay often returns a list with one object
+          if (data is List && data.isNotEmpty && data[0]['BillCode'] != null) {
+            final billCode = data[0]['BillCode'];
+            final url = 'https://toyyibpay.com/$billCode';
+            print('Successfully created bill. Navigating to: $url'); // Debug print
+
+            // --- Check if mounted before navigating ---
+            if (!mounted) return;
+
+            // Navigate to your PaymentWebView
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                // Pass the URL and any booking data needed by the WebView screen
+                builder: (_) => PaymentWebView(paymentUrl: url, bookingData: bookingData), // Pass bookingData instead of donationData
+              ),
+            );
+          } else {
+            print("ToyyibPay response format unexpected: ${response.body}");
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Failed to process payment response.")),
+              );
+            }
+          }
+        } catch (e) {
+          print("Error decoding ToyyibPay JSON response: $e");
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Error reading payment response.")),
+            );
+          }
+        }
+
+      } else {
+        print("ToyyibPay bill creation failed: ${response.body}");
+        if (mounted) { // Check mounted before showing Snackbar
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Failed to initiate payment (Code: ${response.statusCode}).")),
+          );
+        }
+      }
+    } catch (e) {
+      print("Error during HTTP request to ToyyibPay: $e");
+      if (mounted) { // Check mounted before showing Snackbar
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("An error occurred while connecting to payment gateway.")),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -215,82 +358,103 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   }
 
   void _showPreferencesBottomSheet() {
-    // Instead of using temporary variables and an "Apply" button,
-    // update the parent's state immediately on toggle changes.
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
+      isScrollControlled: true, // Add this for potentially taller sheets
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => Padding(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("Route Preference",
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            RadioListTile<bool>(
-              title: Text("Least walking"),
-              value: true,
-              groupValue: leastWalking,
-              onChanged: (value) {
-                setState(() {
-                  leastWalking = value!;
-                });
-              },
-            ),
-            RadioListTile<bool>(
-              title: Text("Shortest time"),
-              value: false,
-              groupValue: leastWalking,
-              onChanged: (value) {
-                setState(() {
-                  leastWalking = value!;
-                });
-              },
-            ),
-            Divider(color: Colors.grey[400]),
-            Text("Bus Stop Preferences",
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            SwitchListTile(
-              value: nearestStop,
-              onChanged: (value) {
-                setState(() {
-                  nearestStop = value;
-                });
-              },
-              title: Text("Nearest stop"),
-            ),
-            SwitchListTile(
-              value: lowestHeadcount,
-              onChanged: (value) {
-                setState(() {
-                  lowestHeadcount = value;
-                });
-              },
-              title: Text("Lowest people headcount"),
-            ),
-            SwitchListTile(
-              value: bicycle,
-              onChanged: (value) {
-                setState(() {
-                  bicycle = value;
-                });
-              },
-              title: Text("Bicycle"),
-            ),
-            SwitchListTile(
-              value: walking,
-              onChanged: (value) {
-                setState(() {
-                  walking = value;
-                });
-              },
-              title: Text("Walking"),
-            ),
-          ],
-        ),
+        // Wrap the Column with SingleChildScrollView
+        child: SingleChildScrollView( // <--- WRAP HERE
+          child: Column(             // <--- Original Column
+            mainAxisSize: MainAxisSize.min, // Keep this
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Bus Stop Preference", // Renamed from "Route Preference" for clarity?
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              RadioListTile<bool>(
+                title: Text("Least walking"),
+                value: true,
+                groupValue: leastWalking,
+                onChanged: (value) {
+                  // Important: Use Navigator.pop(context) BEFORE setState
+                  // if you want the sheet to close immediately after selection.
+                  // Otherwise, the state updates but the sheet remains open.
+                  // If you want it to stay open, keep setState here.
+                  Navigator.pop(context); // Example: Close sheet on selection
+                  setState(() {
+                    leastWalking = value!;
+                  });
+                },
+              ),
+              RadioListTile<bool>(
+                title: Text("Shortest time"),
+                value: false,
+                groupValue: leastWalking,
+                onChanged: (value) {
+                  Navigator.pop(context); // Example: Close sheet on selection
+                  setState(() {
+                    leastWalking = value!;
+                  });
+                },
+              ),
+              Divider(color: Colors.grey[400]),
+              Text("Transportation Preferences", // Renamed from "Bus Stop Preferences"?
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              SwitchListTile(
+                value: nearestStop,
+                onChanged: (value) {
+                  // Note: For SwitchListTiles, the sheet usually stays open
+                  // while toggling. No need to pop here unless intended.
+                  setState(() {
+                    nearestStop = value;
+                  });
+                },
+                title: Text("Nearest stop"),
+              ),
+              SwitchListTile(
+                value: lowestHeadcount,
+                onChanged: (value) {
+                  setState(() {
+                    lowestHeadcount = value;
+                  });
+                },
+                title: Text("Lowest people headcount"),
+              ),
+              SwitchListTile(
+                value: bicycle,
+                onChanged: (value) {
+                  setState(() {
+                    bicycle = value;
+                  });
+                },
+                title: Text("Bicycle (Bike Commute USM)"),
+              ),
+              SwitchListTile(
+                value: scooter,
+                onChanged: (value) {
+                  setState(() {
+                    scooter = value;
+                  });
+                },
+                title: Text("Scooter (Beam)"),
+              ),
+              SwitchListTile(
+                value: walking,
+                onChanged: (value) {
+                  setState(() {
+                    walking = value;
+                  });
+                },
+                title: Text("Walking"),
+              ),
+              // Add some bottom padding if needed inside the scroll view
+              SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
+            ],
+          ),
+        ), // <--- END SingleChildScrollView WRAP
       ),
     );
   }
@@ -344,12 +508,23 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
       ));
     }
 
-    // Bicycle suggestion - only added if toggled on.
     if (bicycle) {
       suggestions.add(_routeCard(
         "Bike ETA: ${_estimateETA(directDistance, isBike: true)} mins",
-        "From ${origin['name']} to ${destination['name']} cycling",
+        "Provider: Bike Commute USM", // Updated subtitle
         Icons.pedal_bike,
+        partnerName: "Bike Commute USM", // Pass partner name
+        onBookNow: () => _navigateToPayment("Bike Commute USM", directDistance), // Add callback
+      ));
+    }
+    if (scooter) {
+      // Assuming scooter speed is similar to bicycle for ETA calculation
+      suggestions.add(_routeCard(
+        "Scooter ETA: ${_estimateETA(directDistance, isBike: true)} mins", // Use bike speed for now, adjust if needed
+        "Provider: Beam", // Subtitle with provider
+        Icons.electric_scooter, // Use an appropriate icon
+        partnerName: "Beam", // Pass partner name
+        onBookNow: () => _navigateToPayment("Beam", directDistance), // Add callback
       ));
     }
 
@@ -368,16 +543,36 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
     );
   }
 
-  Widget _routeCard(String title, String subtitle, IconData icon) {
+  Widget _routeCard(String title, String subtitle, IconData icon, {VoidCallback? onBookNow, String? partnerName}) {
     return Card(
       color: Colors.white,
-      child: ListTile(
-        leading: Icon(icon, color: Colors.purple),
-        title: Text(title, style: TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(subtitle),
-        onTap: () {
-          // You can navigate to a map route here or show more details
-        },
+      child: Padding( // Add padding for the button
+        padding: const EdgeInsets.only(bottom: 8.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(icon, color: Colors.purple),
+              title: Text(title, style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text(subtitle),
+              onTap: () {
+                // Optional: Handle tap if needed (e.g., show details)
+              },
+            ),
+            if (onBookNow != null && partnerName != null) // Conditionally show button
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: ElevatedButton(
+                  onPressed: onBookNow,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green, // Choose a color
+                    foregroundColor: Colors.white,
+                  ),
+                  child: Text("Book Now with $partnerName"),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -115,126 +115,43 @@ class _RouteScreenState extends State<RouteScreen> {
     }
   }
   Future<void> _loadDriverRouteAndAssignment() async {
-    if (_currentUser == null) {
-      debugPrint("No current user found for loading data.");
-      setState(() => _isLoading = false);
+    setState(() {
+      _isLoading = true;
+    });
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    final busActivityId = userDoc.data()!['busActivityId'] as String;
+    final activityDoc = await FirebaseFirestore.instance
+        .collection('busActivity')
+        .doc(busActivityId)
+        .get();
+    if (!activityDoc.exists) {
+      setState(() {
+        _assignedPickupStops = [];
+        _isLoading = false;
+      });
       return;
     }
-    if (!mounted) return; // Check if widget is still mounted
-    setState(() => _isLoading = true);
-
-    try {
-      // Ensure stop locations are loaded first (or concurrently)
-      if (_allStopLocations.isEmpty) {
-        await _fetchAllStopLocations();
-        if (!mounted) return; // Re-check after await
-        if (_allStopLocations.isEmpty) {
-          throw Exception("Failed to load essential stop location data.");
-        }
-      }
-
-      // 1. Get Driver's routeType
-      final userSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .get();
-
-      if (!userSnap.exists || userSnap.data() == null) {
-        throw Exception("User document not found or is empty.");
-      }
-
-      final userData = userSnap.data()!;
-      final driverRouteType = userData['routeType'] as String?;
-
-      if (driverRouteType == null || !_routeTypeStartStops.containsKey(driverRouteType)) {
-        throw Exception("Driver routeType '$driverRouteType' is missing or invalid.");
-      }
-
-      // Store driver's route type and predefined start/end names
-      _driverRouteType = driverRouteType;
-      _routeInitialName = _routeTypeStartStops[driverRouteType];
-      _routeTerminalName = _routeTypeEndStops[driverRouteType];
-
-      // Get the LatLng for the fixed initial stop for map centering
-      _initialPosition  = _allStopLocations[_routeInitialName];
-      if (_initialPosition  == null) {
-        throw Exception("Could not find location for initial stop '$_routeInitialName'.");
-      }
-
-      // 2. Query busActivity for ANY document matching the driver's routeType
-      debugPrint("Querying busActivity for routeType: $_driverRouteType");
-      final query = await FirebaseFirestore.instance
-          .collection('busActivity')
-          .where('routeType', isEqualTo: _driverRouteType) // Match routeType
-          .limit(1) // Get the first one found
-          .get();
-
-      if (query.docs.isEmpty) {
-        debugPrint("No active busActivity found for routeType '$_driverRouteType'.");
-        // Keep _assignedPickupStops empty, user will see the message on button press
-        if (mounted) {
-          setState(() {
-            _isLoading = false; // Stop loading, show map centered on start
-          });
-        }
-        return; // Exit function, nothing more to load
-      }
-
-      // 3. Process the found busActivity document
-      final busDoc = query.docs.first.data();
-      _assignedBusCode = busDoc['busCode'] as String?; // Store the bus code
-
-      final rawStopsList = busDoc['stops'] as List?;
-      final List<Map<String, dynamic>> processedStops = [];
-
-      if (rawStopsList != null) {
-        for (var rawStop in rawStopsList) {
-          if (rawStop is Map) {
-            final name = rawStop['name'] as String?;
-            final crowd = (rawStop['crowd'] as num?)?.toInt();
-            final eta = (rawStop['eta'] as num?)?.toInt();
-            final gp = rawStop['location'] as GeoPoint?; // Location from busActivity stop entry
-
-            if (name != null && crowd != null && eta != null && gp != null) {
-              processedStops.add({
-                'name': name,
-                'crowd': crowd,
-                'eta': eta,
-                'location': LatLng(gp.latitude, gp.longitude),
-              });
-            } else {
-              debugPrint("⚠️ busActivity doc ${query.docs.first.id}: Stop map missing data (name, crowd, eta, or location). Stop: $rawStop");
-            }
-          } else {
-            debugPrint("⚠️ busActivity doc ${query.docs.first.id}: Item in 'stops' list is not a Map. Item: $rawStop");
-          }
-        }
-      } else {
-        debugPrint("⚠️ busActivity doc ${query.docs.first.id} has null or missing 'stops' field.");
-      }
-
-      if (mounted) {
-        setState(() {
-          _assignedPickupStops = processedStops; // Update with assigned stops
-          _isLoading = false; // Loading complete
-        });
-        debugPrint("Successfully loaded ${_assignedPickupStops.length} pickup stops for bus $_assignedBusCode (Route $_driverRouteType)");
-        // Optionally move map camera here if needed, though build handles initial position
-        if (_mapController != null && _initialPosition  != null) {
-          _mapController!.moveCamera(CameraUpdate.newLatLngZoom(_initialPosition !, 15));
-        }
-      }
-
-    } catch (e) {
-      debugPrint("Error loading driver route/assignment: $e");
-      if (mounted) {
-        setState(() => _isLoading = false); // Stop loading on error
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error loading route data: ${e.toString()}")),
-        );
-      }
-    }
+    final rawStops = activityDoc.data()!['stops'] as List<dynamic>;
+    final stops = rawStops.map((e) {
+      final m = e as Map<String, dynamic>;
+      final gp = m['location'] as GeoPoint;
+      return {
+        'name': m['name'] as String,
+        'crowd': (m['crowd'] as num).toInt(),
+        'eta': (m['eta'] as num).toInt(),
+        'location': LatLng(gp.latitude, gp.longitude),
+      };
+    }).toList();
+    setState(() {
+      _assignedPickupStops = stops;
+      _isLoading = false;
+    });
   }
+
+
   Future<bool> _checkAndRequestLocationPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {

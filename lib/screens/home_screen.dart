@@ -219,31 +219,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
                 ),
                 SizedBox(height: 20),
-                // BUS TRACKER BUTTON
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16.0),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purple[600],             // medium–dark purple
-                        padding: EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      icon: Icon(Icons.directions_bus, color: Colors.white),
-                      label: Text('Bus tracker',
-                          style: TextStyle(color: Colors.white, fontSize: 16)),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => BusTrackerScreen()),
-                        );
-                      },
-                    ),
-                  ),
-                ),
                 SizedBox(height: 20),
                 Container(
                   width: double.infinity,
@@ -432,11 +407,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-      ),
-
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
       ),
     );
   }

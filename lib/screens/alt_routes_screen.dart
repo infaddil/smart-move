@@ -82,14 +82,42 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   }
 
   Future<void> _getLocation() async {
-    final permission = await Geolocator.checkPermission();
+    // --- Improved Permission Handling ---
+    LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      await Geolocator.requestPermission();
+      debugPrint("Location permission denied, requesting...");
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        debugPrint("Location permission denied after request.");
+        if (mounted) { // Check mounted before showing Snackbar
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Location permission is required to show alternatives from your location."))
+          );
+        }
+        return; // Exit if permission is still denied
+      }
     }
-    Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-    setState(() {
-      currentLocation = LatLng(position.latitude, position.longitude);
-    });
+
+    // --- Get Location with Error Handling ---
+    try {
+      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+
+      // --- Add Mounted Check ---
+      if (mounted) { // Check if the widget is still mounted BEFORE setState
+        setState(() {
+          currentLocation = LatLng(position.latitude, position.longitude);
+        });
+      }
+      // --- End Mounted Check ---
+
+    } catch (e) {
+      debugPrint("Error getting current position in AltRoutesScreen: $e");
+      if (mounted) { // Check mounted before showing Snackbar on error
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error getting location: ${e.toString()}"))
+        );
+      }
+    }
   }
 
   double _calculateDistance(LatLng from, LatLng to) {
@@ -118,10 +146,6 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
           _preferencesButton(),
           Expanded(child: _suggestedRoutesList()),
         ],
-      ),
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
       ),
     );
   }

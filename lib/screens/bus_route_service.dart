@@ -1,4 +1,3 @@
-// lib/services/bus_route_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
@@ -11,28 +10,61 @@ class BusRouteService {
   BusRouteService._internal();
   final _db = FirebaseFirestore.instance;
   final _rnd = Random();
-  List<Map<String, dynamic>>? _allStopsCache;
   Future<List<Map<String, dynamic>>> getAllStopsWithCrowd() async {
-    if (_allStopsCache != null) return _allStopsCache!;
 
-    // fetch every stop name & location
-    final snap = await _db.collection('busStops').get();
-    _allStopsCache = snap.docs.map((d) {
-      final data = d.data();
-      final name = data['name'] as String;
-      final geo  = data['location'] as GeoPoint;
-      return {
-        'name': name,
-        'location': LatLng(geo.latitude, geo.longitude),
-        // Generate crowd between 10 and 22 (inclusive)
-        // _rnd.nextInt(13) generates 0-12. Adding 10 gives 10-22.
-        'crowd': 10 + _rnd.nextInt(13), // MODIFIED LINE
-        // you can keep ETA random or plug in your real logic
-        'eta': _rnd.nextInt(30) + 1,
-      };
-    }).toList();
+    final stopsSnap  = await _db.collection('busStops').get();
+    if (stopsSnap.docs.isEmpty) {
+      return []; // Return empty if no base stops defined
+    }
+    final activitySnap = await _db.collection('busActivity').get();
+    final Map<String, int> liveCrowdMap = {};
+    for (var doc in activitySnap.docs) {
+      final data = doc.data();
+      // Ensure 'stops' field exists and is a list
+      final stopsListRaw = data['stops'] as List?;
+      if (stopsListRaw != null) {
+        for (var item in stopsListRaw) {
+          // Ensure each item is a map and has name/crowd
+          if (item is Map) {
+            final name = item['name'] as String?;
+            final crowdRaw = item['crowd']; // Crowd from busActivity
+            final int crowdValue = (crowdRaw is num)
+                ? crowdRaw.toInt()
+                : 0; // Default to 0 if missing/invalid
 
-    return _allStopsCache!;
+            if (name != null) {
+              // Store the crowd level found in busActivity for this stop name
+              // If a stop is in multiple activity docs (shouldn't happen often),
+              // this will overwrite with the last one found. Consider merging logic if needed.
+              liveCrowdMap[name] = crowdValue;
+            }
+          }
+        }
+      }
+    }
+
+    final List<Map<String, dynamic>> mergedStops = [];
+    for (var doc in stopsSnap.docs) {
+      final stopData = doc.data();
+      final name = stopData['name'] as String?;
+      final geo = stopData['location'] as GeoPoint?;
+
+      if (name != null && geo != null) {
+        // Get crowd from live map if available, otherwise use default
+        final int currentCrowd = liveCrowdMap[name] ?? 10; // Use live crowd or default to 10
+
+        mergedStops.add({
+          'name': name,
+          'location': LatLng(geo.latitude, geo.longitude),
+          'crowd': currentCrowd, // Use the resolved crowd value
+          // Keep ETA logic as needed (random for now, or fetch from a source)
+          'eta': _rnd.nextInt(30) + 1,
+        });
+      }
+
+    }
+    debugPrint("Merged stops count: ${mergedStops.length}");
+    return mergedStops;
   }
 
   /// Fetch the ordered list of all designated stops for this busType

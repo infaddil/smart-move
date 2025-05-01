@@ -119,10 +119,6 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
           Expanded(child: _suggestedRoutesList()),
         ],
       ),
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
-      ),
     );
   }
 

@@ -11,6 +11,7 @@ import 'package:smart_move/screens/bus_data_service.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:io';
+import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -1276,10 +1277,6 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
             ),
           ),
         ],
-      ),
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
       ),
     );
   }

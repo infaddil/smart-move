@@ -184,10 +184,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             : [],
       ),
       body: _user == null ? _buildSignInPrompt() : _buildProfileView(),
-        bottomNavigationBar: BottomNavBar(
-          selectedIndex: _selectedIndex,
-          onItemTapped: _onItemTapped,
-        ),
     );
 
   }

@@ -15,8 +15,29 @@ class BusTrackerScreen extends StatefulWidget {
   @override
   _BusTrackerScreenState createState() => _BusTrackerScreenState();
 }
+class BusAnimationService with ChangeNotifier {
+  static final BusAnimationService _instance = BusAnimationService._();
+  factory BusAnimationService() => _instance;
+  BusAnimationService._();
 
-class _BusTrackerScreenState extends State<BusTrackerScreen> {
+  final _timers = <String, Timer>{};
+  final positions = <String, LatLng>{};
+  final progress  = <String, double>{};
+  // …other state: _busIndex, _busPaths, assignments, etc.
+
+  Future<void> initOnce() async {
+    if (_timers.isNotEmpty) return; // already started
+    // 1) fetch routes & stops
+    // 2) compute segments
+    // 3) build paths
+    // 4) start Timer.periodic for each bus, updating positions & progress…
+    //    when a route reaches progress>=1, reset or stop that one
+    notifyListeners();
+  }
+}
+
+
+class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepAliveClientMixin {
   int _selectedIndex = 0;
   User? _currentUser;
   String? _userRole;
@@ -58,7 +79,9 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
   Set<Polyline> _polylines = {};
   Map<String,BitmapDescriptor> _busIcons = {};
   @override
+  bool get wantKeepAlive => true;
   void initState() {
+    print(">>> initState Called for BusTrackerScreen");
     super.initState();
     _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
@@ -91,24 +114,36 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         }
       });
     });
+    if (_busTimers.isEmpty) {
+      print(">>> Running FULL Initialization in initState"); // Should run only ONCE per state creation
 
-    // 2) Load all data and initialize
-    _initData().then((_) async {
-      await _initializeAllBuses();
-      await _buildMapElements();
+      // --- THIS BLOCK MUST NOT BE COMMENTED OUT ---
+      _initData().then((_) async {
+        await _initializeAllBuses();
+        await _buildMapElements();
 
-      // Verify everything is ready before starting animations
-      if (mounted &&
-          _busAssignments.isNotEmpty &&
-          _busPaths.isNotEmpty &&
-          _busPaths.values.every((path) => path.isNotEmpty)) {
-        setState(() {
-          _startBusAnimations();
-        });
-      } else {
-        debugPrint('⚠️ Not starting animations - missing required data');
-      }
-    });
+        // Verify everything is ready before starting animations
+        if (mounted &&
+            _busAssignments.isNotEmpty &&
+            _busPaths.isNotEmpty &&
+            _busPaths.values.every((path) => path.isNotEmpty)) {
+          setState(() {
+            // Call _startBusAnimations AFTER data is ready
+            _startBusAnimations();
+          });
+        } else {
+          debugPrint('⚠️ Not starting animations - missing required data after init');
+        }
+      });
+      // --- END OF BLOCK TO KEEP ---
+
+    } else {
+      print(">>> Skipping full init in initState - Reusing State");
+      // If state is preserved (timers exist), do nothing extra here.
+      // The build method will use the existing state.
+    }
+
+
   }
   Future<void> _fetchUserRole() async {
     final doc = await FirebaseFirestore.instance
@@ -133,12 +168,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     return snapshot.docs.map((doc) => doc.data()).toList();
   }
 
-  @override
-  void dispose() {
-    _stopBusAnimations();
-    _mapController?.dispose();
-    super.dispose();
-  }
   final Map<String, double> _busProgress = {};
 
   Future<void> _initializeAllBuses() async {
@@ -172,8 +201,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
       setState(() {});
     }
   }
-
-  // Add these methods to your _BusTrackerScreenState class
 
   /// Calculate points between two coordinates
   List<LatLng> _getPointsBetween(LatLng start, LatLng end, int segments) {
@@ -325,17 +352,69 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
     'C2': 0.8,
   };
 
+  // In _BusTrackerScreenState
+
   void _startBusAnimations() {
-    _stopBusAnimations();
+    print(">>> _startBusAnimations Called"); // Add this
+    // Only stop *old* timers if necessary, maybe we want to keep existing ones?
+    // Option 1: Keep existing timers if they exist (most likely desired for resume)
+    // _stopBusAnimations(); // <-- REMOVE or COMMENT OUT this line if you want timers to persist
 
     _busAssignments.forEach((busId, code) {
+      // Check if a timer ALREADY exists for this bus. If so, skip starting a new one.
+      if (_busTimers.containsKey(busId) && _busTimers[busId]!.isActive) {
+        print("Timer already active for $busId, skipping new timer creation.");
+        // Ensure the position exists from the kept-alive state
+        if (_busPositions[busId] == null && _busPaths[busId] != null && _busPaths[busId]!.isNotEmpty) {
+          // If position somehow got lost, reset based on progress
+          final path = _busPaths[busId]!;
+          final progress = _busProgress[busId] ?? 0.0;
+          final segmentLength = path.length > 1 ? path.length - 1 : 1;
+          final segmentIndex = (progress * segmentLength).floor().clamp(0, path.length - 2);
+          final segmentProgress = (progress * segmentLength) - segmentIndex;
+          final start = path[segmentIndex];
+          final end = path[segmentIndex + 1]; // Safe due to clamp
+          _busPositions[busId] = LatLng(
+            start.latitude + (end.latitude - start.latitude) * segmentProgress,
+            start.longitude + (end.longitude - start.longitude) * segmentProgress,
+          );
+          _busIndex[busId] = segmentIndex;
+          print("Re-initialized position for $busId based on progress $progress");
+        }
+        return; // Skip to the next bus
+      }
+
+      // If no active timer, proceed to setup (or resume if state partially exists)
       final path = _busPaths[busId];
-      if (path == null || path.isEmpty) return;
+      if (path == null || path.isEmpty) {
+        debugPrint("⚠️ No path for bus $busId ($code), skipping animation start.");
+        return;
+      }
 
-      _busPositions[busId] = path[0];
-      _busIndex[busId] = 0;
+      // --- Initialize state ONLY IF IT DOESN'T EXIST ---
+      if (!_busPositions.containsKey(busId)) {
+        _busPositions[busId] = path[0];
+        print("Initialized position for $busId");
+      }
+      if (!_busIndex.containsKey(busId)) {
+        _busIndex[busId] = 0;
+        print("Initialized index for $busId");
+      }
+      if (!_busProgress.containsKey(busId)) {
+        _busProgress[busId] = 0.0;
+        print("Initialized progress for $busId");
+      }
+      // --- End Initialization Check ---
 
-      // Calculate base duration with speed variation
+      // Use the potentially existing (kept-alive) or newly initialized values
+      final currentPosition = _busPositions[busId]!;
+      final currentIndex = _busIndex[busId]!;
+      final currentProgress = _busProgress[busId]!; // Already defaults to 0.0 if initialized above
+
+      print("Starting animation for $busId from progress: $currentProgress, index: $currentIndex, position: $currentPosition");
+
+
+
       double totalDistance = 0;
       for (int i = 0; i < path.length - 1; i++) {
         totalDistance += Geolocator.distanceBetween(
@@ -343,51 +422,81 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
           path[i+1].latitude, path[i+1].longitude,
         );
       }
-
-      // Apply speed modifier (20% variation)
       final speedModifier = _busSpeeds[code] ?? 1.0;
-      final baseDuration = (totalDistance / 5).clamp(100, 500).toInt();
-      final duration = Duration(milliseconds: (baseDuration / speedModifier).toInt());
+      // ... (your duration calculation) ...
 
-      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) async{
+      // --- Start the timer ---
+      // Clear any old, inactive timer entry for this bus first
+      _busTimers[busId]?.cancel();
+      print(">>> Setting up NEW timer for $busId. Initial Progress: ${_busProgress[busId]}");
+
+      _busTimers[busId] = Timer.periodic(Duration(milliseconds: 100), (t) async {
         if (!mounted) {
           t.cancel();
+          _busTimers.remove(busId); // Clean up timer reference
           return;
         }
 
         try {
-          final currentIdx = _busIndex[busId] ?? 0;
-          final progress = _busProgress[busId] ?? 0.0;
+          // Use the progress from the map, critical for state preservation
+          final progress = _busProgress[busId] ?? 0.0; // Default to 0.0 if somehow null
           final segmentLength = path.length > 1 ? path.length - 1 : 1;
 
-          // Calculate new progress (0.0 to 1.0 for entire route)
-          double newProgress = progress + (0.0005 * speedModifier);
-          if (newProgress >= 1.0) newProgress = 0.0;
+          // Calculate new progress (ensure it uses the current value)
+          double newProgress = progress + (0.0005 * speedModifier); // Adjust step as needed
+
+          // --- Route Completion Logic ---
+          if (newProgress >= 1.0) {
+            print("Bus $busId completed route. Resetting progress.");
+            newProgress = 0.0; // Reset progress for next loop
+
+            // Optional: Implement logic here to fetch new assignments or wait
+            // For now, it just loops back to the start
+          }
 
           // Find current segment and position within segment
-          final segmentIndex = (newProgress * segmentLength).floor();
+          final segmentIndex = (newProgress * segmentLength).floor().clamp(0, path.length - 2); // Clamp to avoid index out of bounds
           final segmentProgress = (newProgress * segmentLength) - segmentIndex;
 
           // Calculate exact position
           final start = path[segmentIndex];
-          final end = path[(segmentIndex + 1) % path.length];
+          final end = path[segmentIndex + 1]; // Safe due to clamp
+
           final currentPos = LatLng(
             start.latitude + (end.latitude - start.latitude) * segmentProgress,
             start.longitude + (end.longitude - start.longitude) * segmentProgress,
           );
-          await _updateBusStops();
 
-          setState(() {
-            _busPositions[busId] = currentPos;
-            _busProgress[busId] = newProgress;
-            _busIndex[busId] = segmentIndex;
-          });
-        } catch (e) {
-          debugPrint('⚠️ Animation error for bus $busId: $e');
+          // Only call updateBusStops if needed, maybe not every tick?
+          // await _updateBusStops(); // Consider frequency
+
+          // Update state ONLY if values changed to minimize rebuilds
+          if (_busPositions[busId] != currentPos || _busProgress[busId] != newProgress || _busIndex[busId] != segmentIndex) {
+            if (mounted) { // Double check mounted before setState
+              setState(() {
+                _busPositions[busId] = currentPos;
+                _busProgress[busId] = newProgress;
+                _busIndex[busId] = segmentIndex;
+              });
+            } else {
+              t.cancel(); // Stop timer if widget is no longer mounted
+              _busTimers.remove(busId);
+            }
+          }
+
+        } catch (e, stackTrace) {
+          debugPrint('⚠️ Animation error for bus $busId: $e\n$stackTrace');
           t.cancel();
+          _busTimers.remove(busId); // Clean up timer reference
         }
       });
     });
+
+    // Initial build might be needed if state was just created
+    if (mounted) {
+      setState(() {});
+    }
+    // --- MODIFICATION END ---
   }
   void _moveBusAlongPath(String busId, List<LatLng> path, Timer timer) {
     if (!mounted) {
@@ -670,6 +779,7 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final loaded =
         _busAssignments.isNotEmpty
             && _busSegments.length == _busAssignments.length;
@@ -704,13 +814,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> {
         polylines: _allPolylines,
         myLocationEnabled: true,
         myLocationButtonEnabled: false,
-      ),
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
-        currentLatLng : center,
-        busAssignments: _busAssignments,
-        busSegments   : _busSegments,
       ),
     );
   }

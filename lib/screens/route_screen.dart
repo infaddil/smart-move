@@ -320,10 +320,6 @@ class _RouteScreenState extends State<RouteScreen> {
         icon: Icon(Icons.directions_bus),
         backgroundColor: Colors.purple,
       ),
-      bottomNavigationBar: BottomNavBar(
-        selectedIndex: _selectedIndex,
-        onItemTapped: _onItemTapped,
-      ),
     );
   }
 }

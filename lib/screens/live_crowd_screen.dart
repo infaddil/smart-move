@@ -298,6 +298,10 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   NOW ANALYZE THE IMAGE AND FOLLOW THE LOGIC ABOVE:
   """;
   }
+
+  // --- Place this ENTIRE function inside the _LiveCrowdScreenState class ---
+// --- Replacing the previous version you have ---
+
   Future<void> _sendImageQueryToGemini(
       String imagePath,
       String baseInstruction,
@@ -306,136 +310,201 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
       Map<String, List<Map<String, dynamic>>> currentActiveBusSegments
       ) async {
 
-    // Safety check
-    if (imagePath.isEmpty) {
-      debugPrint("Error: Image path is empty.");
-      setState(() {
-        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
-          ..add({"sender": "ai", "message": "⚠️ Error: Could not find selected image file."});
-      });
-      return;
-    }
-
-    // Get API Key
-    final apiKey = dotenv.env['GEMINI_API_KEY'];
-    if (apiKey == null || apiKey.isEmpty) {
-      debugPrint('Error: No Gemini API key found');
-      setState(() {
-        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
-          ..add({"sender": "ai", "message": "⚠️ Error: API Key not configured."});
-      });
-      return;
-    }
-
-    // Add "Analyzing image..." placeholder
-    setState(() {
-      _chatHistory.add({"sender": "ai", "message": "🔄 Analyzing image..."});
+    final analyzingMessageId = DateTime.now().millisecondsSinceEpoch.toString();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if(mounted) {
+        setState(() {
+          _chatHistory.add({"id": analyzingMessageId, "sender": "ai", "message": "🔄 Analyzing image..."});
+        });
+        if (_sheetScrollController?.hasClients ?? false) {
+          _sheetScrollController?.animateTo(_sheetScrollController!.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+        }
+      }
     });
 
-    try {
-      // Read and Encode Image File
-      final imageFile = File(imagePath);
-      if (!await imageFile.exists()) {
-        throw Exception("Image file does not exist at path: $imagePath");
+    String finalMessage = "⚠️ An error occurred processing the image.";
+
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    if (apiKey == null || apiKey.isEmpty) {
+      finalMessage = "⚠️ Error: API Key not configured.";
+      debugPrint(finalMessage);
+      if (mounted) {
+        setState(() {
+          _chatHistory.removeWhere((msg) => msg["id"] == analyzingMessageId);
+          _chatHistory.removeWhere((msg) => msg["message"] == "🔄 Analyzing image...");
+          _chatHistory.add({"sender": "ai", "message": finalMessage});
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_sheetScrollController?.hasClients ?? false) {
+            _sheetScrollController?.animateTo(_sheetScrollController!.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+          }
+        });
       }
+      return;
+    }
+
+    try {
+      final imageFile = File(imagePath);
+      if (!await imageFile.exists()) throw Exception("Image file does not exist at path: $imagePath");
       final imageBytes = await imageFile.readAsBytes();
       final base64Image = base64Encode(imageBytes);
+      String mimeType = 'image/jpeg';
+      final lowerPath = imagePath.toLowerCase();
+      if (lowerPath.endsWith('.png')) mimeType = 'image/png';
+      else if (lowerPath.endsWith('.webp')) mimeType = 'image/webp';
+      else if (lowerPath.endsWith('.heic')) mimeType = 'image/heic';
+      else if (lowerPath.endsWith('.heif')) mimeType = 'image/heif';
 
-      // --- Determine MIME Type (Common image types) ---
-      String mimeType = 'image/jpeg'; // Default or common type
-      if (imagePath.endsWith('.png')) {
-        mimeType = 'image/png';
-      } else if (imagePath.endsWith('.webp')) {
-        mimeType = 'image/webp';
-      } else if (imagePath.endsWith('.heic')) {
-        mimeType = 'image/heic';
-      } else if (imagePath.endsWith('.heif')) {
-        mimeType = 'image/heif';
-      }
-      // Add more types if needed
-
-      // --- Build the Enhanced Prompt using the new function ---
       final fullPrompt = _buildEnhancedImagePrompt(
           baseInstruction,
           currentStops,
           currentBusAssignments,
           currentActiveBusSegments
-      );
-      debugPrint("--- Sending Image Prompt to AI ---");
-      // Avoid printing potentially huge base64 string in prompt here
-      // debugPrint(fullPrompt);
+      ); // Assumes _buildEnhancedImagePrompt function exists
 
-      // Construct the API Request Body (Multimodal: Text + Image)
       final requestBody = jsonEncode({
-        "contents": [
-          {
-            "parts": [
-              // Part 1: The combined text prompt (instruction + context)
-              {"text": fullPrompt},
-              // Part 2: The image data
-              {
-                "inlineData": {
-                  "mimeType": mimeType,
-                  "data": base64Image // The Base64 encoded image data
-                }
-              }
-            ]
-          }
-        ],
-        "generationConfig": {
-          "temperature": 0.7, // Adjust as needed
-          "maxOutputTokens": 1024,
-        }
+        "contents": [{"parts": [{"text": fullPrompt}, {"inlineData": {"mimeType": mimeType, "data": base64Image}}] }],
+        "generationConfig": { "temperature": 0.7, "maxOutputTokens": 1024, }
       });
 
-      // Make the API Call (use a multimodal model like 1.5 flash/pro)
+      debugPrint("--- Sending Image Query ---");
       final response = await http.post(
         Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: requestBody,
-      ).timeout(const Duration(seconds: 90)); // Longer timeout for image analysis
+      ).timeout(const Duration(seconds: 90));
+      debugPrint("--- Gemini Response Received (Status: ${response.statusCode}) ---");
 
-      debugPrint("Gemini Image response status: ${response.statusCode}");
-      debugPrint("Gemini Image response body: ${response.body.substring(0, min(response.body.length, 500))}...");
-
-
-      // Process the Response
-      String messageText;
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        messageText = data['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? "Could not extract response text.";
-        if (data['candidates'] == null || data['candidates'].isEmpty) {
-          final blockReason = data['promptFeedback']?['blockReason'];
-          messageText = blockReason != null ? "⚠️ Response blocked: $blockReason" : "⚠️ Received an empty response from the AI.";
-        } else if (data['candidates']?[0]?['finishReason'] == 'MAX_TOKENS') {
-          messageText += "\n\n[Response may be truncated]";
+        String geminiRawResponse = data['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? "";
+        debugPrint("===== Raw Gemini Response Start =====");
+        debugPrint(geminiRawResponse);
+        debugPrint("===== Raw Gemini Response End =====");
+
+        bool overrideApplied = false;
+
+        final Map<String, String> locationOverrides = {
+          "desasiswa cahaya gemilang h34": "BHEPA",
+          "desasiswa bakti permai": "Stor Kimia",
+          "desasiswa bakti fajar permai": "Stor Kimia",
+        };
+        String? identifiedLocationForMsg;
+        String? correctNearbyStopName;
+        String geminiResponseLower = geminiRawResponse.toLowerCase();
+        debugPrint("Lowercase Gemini Response for check: $geminiResponseLower");
+
+        for (var entry in locationOverrides.entries) {
+          String keyToCheck = entry.key;
+          String stopToSuggest = entry.value;
+          bool containsKey = geminiResponseLower.contains(keyToCheck);
+          debugPrint("Checking if response contains key: '$keyToCheck' | Result: $containsKey");
+
+          if (containsKey) {
+            identifiedLocationForMsg = keyToCheck;
+            correctNearbyStopName = stopToSuggest;
+            overrideApplied = true;
+            debugPrint("!!! Override Rule Matched !!!");
+            debugPrint("Matched Keyword: $identifiedLocationForMsg");
+            debugPrint("Suggesting Override Stop: $correctNearbyStopName");
+            break;
+          }
         }
-      } else {
+
+        if (overrideApplied && correctNearbyStopName != null) {
+          debugPrint("Attempting to find data for override stop: '$correctNearbyStopName'");
+          debugPrint("Available stop names in currentStops: ${currentStops.map((s) => s['name']).toList()}");
+
+          final correctStopData = currentStops.firstWhere(
+                (stop) =>
+            stop['name']?.toString().trim().toLowerCase() ==
+                correctNearbyStopName!.trim().toLowerCase(),
+            orElse: () => <String, Object>{},
+          );
+
+          if (correctStopData.isNotEmpty) {
+            debugPrint("Successfully found data for override stop: $correctNearbyStopName");
+            final crowd = correctStopData['crowd'] ?? '?';
+            final eta = correctStopData['eta'] ?? '?';
+            final servingBuses = currentBusAssignments.entries
+                .where((entry) => (currentActiveBusSegments[entry.key] ?? []).any((s) => s['name'] == correctNearbyStopName))
+                .map((e) => e.value)
+                .toList();
+            String displayIdentifiedName = identifiedLocationForMsg ?? "the identified location";
+            if (displayIdentifiedName.isNotEmpty) {
+              try {
+                displayIdentifiedName = displayIdentifiedName.split(' ').map((word) {
+                  if (word.isEmpty) return '';
+                  if (word.length > 1 && word.substring(1).contains(RegExp(r'[A-Z0-9]'))) { return word[0].toUpperCase() + word.substring(1); }
+                  return word[0].toUpperCase() + word.substring(1).toLowerCase();
+                }).join(' ');
+              } catch (e) { /* ignore */ }
+            }
+
+            finalMessage = """
+✅ The image appears to show '$displayIdentifiedName'. This location is not a listed bus stop.
+➡️ Based on known locations, the closest known bus stop is '$correctNearbyStopName'.
+
+To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopName' bus stop:
+👥 Crowd: $crowd people
+⏱️ ETA: $eta minutes
+🚌 Serving Buses: ${servingBuses.isNotEmpty ? servingBuses.join(', ') : 'None'}""";
+            debugPrint("Override applied. Final message constructed.");
+
+          } else {
+            debugPrint("Override logic failed: Stop data not found for '$correctNearbyStopName'. Falling back to Gemini response.");
+            finalMessage = geminiRawResponse.isNotEmpty ? geminiRawResponse : "Could not extract response text.";
+            overrideApplied = false;
+          }
+        }
+
+        if (!overrideApplied) {
+          debugPrint("No override applied. Using original Gemini logic.");
+          if (geminiRawResponse.isEmpty) {
+            final blockReason = data['promptFeedback']?['blockReason'];
+            finalMessage = blockReason != null ? "⚠️ Response blocked: $blockReason" : "⚠️ Received an empty response from the AI.";
+          } else if (data['candidates']?[0]?['finishReason'] == 'MAX_TOKENS') {
+            finalMessage = "$geminiRawResponse\n\n[Response may be truncated]";
+          } else {
+            finalMessage = geminiRawResponse;
+          }
+        }
+
+      } else { // Handle API errors
         String errorDetail = response.body;
         try {
           final errorJson = jsonDecode(response.body);
           errorDetail = errorJson['error']?['message'] ?? response.body;
         } catch (_) {}
-        messageText = "⚠️ API Error ${response.statusCode}: $errorDetail";
+        finalMessage = "⚠️ API Error ${response.statusCode}: $errorDetail";
+        debugPrint("API Error encountered: $finalMessage");
       }
-
-      // Update chat history, replacing "Analyzing..."
-      setState(() {
-        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
-          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing image...")
-          ..add({"sender": "ai", "message": messageText});
-      });
-
-    } catch (e) {
-      debugPrint("Error sending image query: $e");
-      // Update chat history with error, replacing "Analyzing..."
-      setState(() {
-        _chatHistory = List<Map<String, dynamic>>.from(_chatHistory)
-          ..removeWhere((msg) => msg["message"] == "🔄 Analyzing image...")
-          ..add({"sender": "ai", "message": "⚠️ Error processing image: ${e.toString()}"});
-      });
+    } catch (e) { // Handle other exceptions
+      debugPrint("Error sending image query (Exception caught): $e");
+      finalMessage = "⚠️ Error processing image: ${e.toString()}";
     }
-  }
+
+    // --- Final UI Update ---
+    if (mounted) {
+      setState(() {
+        _chatHistory.removeWhere((msg) => msg["id"] == analyzingMessageId);
+        _chatHistory.removeWhere((msg) => msg["message"] == "🔄 Analyzing image...");
+        _chatHistory.add({"sender": "ai", "message": finalMessage});
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_sheetScrollController?.hasClients ?? false) {
+          _sheetScrollController?.animateTo(
+            _sheetScrollController!.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } else {
+      debugPrint("Widget unmounted before final UI update for image query.");
+    }
+
+  } // End of _sendImageQueryToGemini
 
   String _buildEnhancedAudioPrompt(
       String baseInstruction, // e.g., "Analyze this audio..."

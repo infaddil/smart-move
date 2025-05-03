@@ -46,6 +46,19 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   bool _isMicButtonPressed = false;
   Map<String,LatLng>   _stopLocations     = {};
   Map<String,int>      _crowdLevels       = {};
+  final List<String> _destinations = [
+    'Aman Damai',
+    'Informm',
+    'Stor Kimia',
+    'BHEPA',
+    'DKSK',
+    'SOLLAT',
+    'HBP',
+    'PHS',
+    'Eureka',
+    'Harapan',
+  ];
+  String? _selectedDestination;
 
 
   List<Map<String,dynamic>> _chatHistory = [];
@@ -1294,7 +1307,7 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
       builder: (context) {
         return Padding(
           padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).viewInsets.bottom,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
           ),
           child: DraggableScrollableSheet(
             expand: false,
@@ -1320,12 +1333,19 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple),
                   ),
                   SizedBox(height: 12),
+                  if (_chatController.text.isEmpty && _chatHistory.isEmpty)
+                    Image.asset(
+                      'assets/ask_here.png',
+                      height: 180,
+                      fit: BoxFit.contain,
+                    ),
+                  SizedBox(height: 12),
                   if (_chatHistory.isNotEmpty &&
                       _chatHistory.last["sender"] == "ai" &&
                       _chatHistory.last["message"] == "🔄 Analyzing...")
                     LinearProgressIndicator(minHeight: 2),
 
-                  Expanded(
+                  Flexible(
                     child: ListView.builder(
                       controller: scrollController,
                       itemCount: _chatHistory.length,
@@ -1333,21 +1353,20 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
                         final chat = _chatHistory[index];
                         final isUser = chat["sender"] == "user";
 
-                        // Skip if message is empty (safety check)
                         if (chat["message"]?.isEmpty ?? true) return SizedBox.shrink();
                         if (chat["type"] == "image") {
-                        return Image.file(File(chat["content"]));
+                          return Image.file(File(chat["content"]));
                         }
                         if (chat["type"] == "audio") {
-                        return Row(
-                        children: [
-                          IconButton(
-                          icon: Icon(Icons.play_arrow),
-                          onPressed: () {
-                          },
-                          ),
-                          Text("Voice message"),
-                        ],
+                          return Row(
+                            children: [
+                              IconButton(
+                                icon: Icon(Icons.play_arrow),
+                                onPressed: () {
+                                },
+                              ),
+                              Text("Voice message"),
+                            ],
                           );
                         }
                         return Align(
@@ -1378,48 +1397,46 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
                   ),
                   SizedBox(height: 10),
                   _buildLiveDataVisual(),
-                  // Near the bottom of the _showChatModal Column's children:
                   Padding(
                     padding: EdgeInsets.only(bottom: 10, top: 8, left: 8, right: 8),
                     child: Row(
                       children: [
-                        IconButton( // Keep the image button
+                        IconButton(
                           icon: Icon(Icons.image),
                           onPressed: _pickImage,
                         ),
-
-                        // REPLACE the mic IconButton with this GestureDetector:
                         GestureDetector(
-                          onLongPressStart: (_) => _startRecording(), // Start on press down
-                          onLongPressEnd: (_) => _stopAndSendRecording(), // Stop on release
-                          child: Container( // Wrap Icon in Container for visual feedback
-                            padding: EdgeInsets.all(8.0), // Similar padding to IconButton
+                          onLongPressStart: (_) => _startRecording(),
+                          onLongPressEnd: (_) => _stopAndSendRecording(),
+                          child: Container(
+                            padding: EdgeInsets.all(8.0),
                             decoration: BoxDecoration(
-                              color: _isMicButtonPressed ? Colors.red[100] : Colors.transparent, // Highlight when pressed
+                              color: _isMicButtonPressed ? Colors.red[100] : Colors.transparent,
                               shape: BoxShape.circle,
                             ),
                             child: Icon(
-                              Icons.mic, // Keep the mic icon
-                              color: _isMicButtonPressed ? Colors.red : Theme.of(context).iconTheme.color, // Change color when pressed
+                              Icons.mic,
+                              color: _isMicButtonPressed ? Colors.red : Theme.of(context).iconTheme.color,
                             ),
                           ),
                         ),
-                        // END of GestureDetector replacement
-
-                        Expanded( // Keep the TextField
+                        Expanded(
                           child: TextField(
                             controller: _chatController,
                             decoration: InputDecoration(
                               hintText: "Ask a question...",
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                             ),
+                            onChanged: (_) {
+                              setState(() {});
+                            },
                             onSubmitted: _sendUserQuery,
                           ),
                         ),
                         SizedBox(width: 8),
-                        ElevatedButton( // Keep the Send button
+                        ElevatedButton(
                           onPressed: () => _sendUserQuery(_chatController.text),
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.purple[100]),
                           child: Icon(Icons.send, color: Colors.white),
                         )
                       ],
@@ -1433,8 +1450,6 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
       },
     );
   }
-
-
   // ------------------------ LIVE DATA VISUAL ----------------------------------- //
   Widget _buildLiveDataVisual() {
     return Container(
@@ -1483,68 +1498,88 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Live Crowd"),
-        backgroundColor: Colors.purple,
+        backgroundColor: Colors.purple[100],
+        elevation: 0,
+        toolbarHeight: 80,
+        centerTitle: true,
+
+        iconTheme: IconThemeData(color: Colors.black),
+        titleTextStyle: TextStyle(
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+
+        // no more manual top-padding here—AppBar will center it vertically
+        title: Text('Live Crowd'),
       ),
       body: _currentLocation == null
           ? Center(child: CircularProgressIndicator())
           : Stack(
         children: [
+          // 1) The map now centres on your fixed LatLng:
           GoogleMap(
-            onMapCreated: (controller) => _controller = controller,
-            initialCameraPosition: CameraPosition(
-              target: _currentLocation!,
-              zoom: 16,
-            ),
-            markers: _busStops.map((stop) {
-              return Marker(
-                markerId: MarkerId(stop['name']),
-                position: stop['location'],
-                infoWindow: InfoWindow(
-                  title: stop['name'],
-                  snippet:
-                  "${stop['crowd']} people waiting\nETA: ${stop['eta']} min",
+            onMapCreated: (controller) {
+              _controller = controller;
+              // jump immediately to the fixed center
+              controller.moveCamera(
+                CameraUpdate.newLatLngZoom(
+                  LatLng(5.354792742851638, 100.30181627359067),
+                  16,
                 ),
               );
-            }).toSet(),
-            myLocationEnabled: true,
+            },
+            initialCameraPosition: CameraPosition(
+              target: LatLng(5.354792742851638, 100.30181627359067),
+              zoom: 16,
+            ),
+            markers: _busStops.map((stop) => Marker(
+              markerId: MarkerId(stop['name']),
+              position: stop['location'],
+              infoWindow: InfoWindow(
+                title: stop['name'],
+                snippet: "${stop['crowd']} ppl · ETA ${stop['eta']}m",
+              ),
+            )).toSet(),
+            myLocationEnabled: false,
           ),
 
+// 2) Dropdown instead of free‐text:
           Positioned(
             top: 20,
             left: 20,
             right: 20,
-            child: Container(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [BoxShadow(blurRadius: 4, color: Colors.black26)],
-              ),
-              child: TextField(
-                decoration: InputDecoration(
-                  hintText: "Search bus stop...",
-                  border: InputBorder.none,
-                  icon: Icon(Icons.search),
+            child: DropdownButtonFormField<String>(
+              value: _selectedDestination,
+              decoration: InputDecoration(
+                hintText: 'Select stop…',
+                filled: true,
+                fillColor: Colors.white,
+                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
                 ),
-                onSubmitted: (query) {
-                  final match = _busStops.firstWhere(
-                        (stop) => stop['name']
-                        .toLowerCase()
-                        .contains(query.toLowerCase()),
-                    orElse: () => {},
-                  );
-                  if (match.isNotEmpty) {
-                    _controller.animateCamera(
-                      CameraUpdate.newLatLng(match['location']),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text("No matching bus stop found.")),
-                    );
-                  }
-                },
+                // search icon on the right:
+                suffixIcon: Icon(Icons.search),
               ),
+              items: _destinations.map((d) =>
+                  DropdownMenuItem(value: d, child: Text(d))
+              ).toList(),
+              onChanged: (d) {
+                if (d == null) return;
+                setState(() => _selectedDestination = d);
+                final loc = _stopLocations[d];
+                if (loc != null) {
+                  _controller.animateCamera(
+                    CameraUpdate.newLatLngZoom(loc, 16),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text("Location for $d not found.")),
+                  );
+                }
+              },
             ),
           ),
 
@@ -1556,7 +1591,10 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
               icon: Icon(Icons.auto_mode),
               label: Text("Ask AI Assistant"),
               onPressed: _showChatModal,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.purple[100], // ← your HomeScreen purple[100]
+                foregroundColor: Colors.black,        // make sure the icon/text are visible
+              ),
             ),
           ),
         ],

@@ -544,17 +544,142 @@ NOW, provide the recommendation based on the data and requirements:
       backgroundColor: Colors.purple[100],
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(4),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Hello, Intan',
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                Padding(
+                  padding: const EdgeInsets.only(top: 26.0, left: 16.0, right: 16.0), // Added top: 10.0
+                  child: Text(
+                    'Hello, Intan',
+                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                  ),
                 ),
-                SizedBox(height: 20),
-                SizedBox(height: 20),
+                SizedBox(height: 30),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        decoration: InputDecoration(
+                          hintText: 'Search destination',
+                          prefixIcon: Icon(Icons.search),
+                          filled: true,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                        onSubmitted: (dest) async {
+                          if (!mounted) return;
+                          setState(() {
+                            _searchResultMessage = "🔄 Fetching live data & recommendation..."; // Updated loading message
+                          });
+
+                          final destinationInput = dest.trim();
+                          final destinationLower = destinationInput.toLowerCase();
+                          // String? servingBusId; // We might not need servingBusId anymore if prompt handles finding best option
+
+                          try {
+                            // 1. Ensure Current Location is Available
+                            if (_currentPosition == null) {
+                              await _initLocation(); // Make sure we have user's location
+                              if (!mounted) return;
+                              if (_currentPosition == null) {
+                                throw Exception("Could not get your current location.");
+                              }
+                            }
+
+                            // 2. Fetch FRESH Live Bus Context right now
+                            final liveContext = await _fetchLiveBusContext();
+                            if (!mounted) return;
+                            if ((liveContext['assignments'] as Map? ?? {}).isEmpty && (liveContext['segments'] as Map? ?? {}).isEmpty) {
+                              // This might happen if _fetchLiveBusContext caught an error and returned empty maps
+                              throw Exception("Failed to fetch live bus activity data.");
+                            }
+
+                            final allKnownStopNames = (liveContext['stopLocations'] as Map<String, LatLng>? ?? {}).keys.map((k) => k.toLowerCase()).toSet();
+                            if (!allKnownStopNames.contains(destinationLower)) {
+                              debugPrint("Destination '$destinationInput' not found in known stop names. Letting AI determine route.");
+                            }
+                            final prompt = _buildLivePrompt(
+                              destinationInput, // User's query
+                              liveContext,      // The fetched live data
+                              _currentPosition!,// User's location
+                            );
+                            debugPrint("--- Live Gemini Prompt ---\n$prompt");
+
+                            // 4. Call Gemini API
+                            final aiResponse = await _callGemma(prompt); // Use your existing _callGemma
+                            debugPrint("--- Live Gemini Response ---\n$aiResponse");
+                            if (!mounted) return;
+
+                            // 5. Display Result
+                            setState(() => _searchResultMessage = aiResponse);
+
+                          } catch (e, stackTrace) {
+                            if (!mounted) return;
+                            debugPrint("Error getting live suggestion: $e\n$stackTrace");
+                            setState(() {
+                              _searchResultMessage = "⚠️ Error getting recommendation: ${e.toString().replaceFirst('Exception: ', '')}";
+                            });
+                          }
+                        }, // End of onSubmitted
+                      ),
+
+                      if (_searchResultMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Card(
+                            color: Colors.purple[50],
+                            child: Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: Text(
+                                _searchResultMessage!,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Container(
+                  height: 150,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: _currentPosition != null
+                      ? ClipRRect(
+                    borderRadius: BorderRadius.circular(5),
+                    child: GoogleMap(
+                      initialCameraPosition: CameraPosition(
+                        target: _currentPosition!,
+                        zoom: 15,
+                      ),
+                      onMapCreated: (c) => _mapController = c,
+                      onTap: (LatLng tappedPoint) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => LiveCrowdScreen(
+                              initialLocation: _currentPosition!,
+                            ),
+                          ),
+                        );
+                      },
+                      myLocationEnabled: true,
+                      zoomControlsEnabled: false,
+                    ),
+                  )
+                      : Center(child: CircularProgressIndicator()),
+                ),
+                SizedBox(height: 30),
                 Container(
                   width: double.infinity,
                   height: MediaQuery.of(context).size.height * 0.85,
@@ -567,98 +692,7 @@ NOW, provide the recommendation based on the data and requirements:
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            TextField(
-                              decoration: InputDecoration(
-                                hintText: 'Search destination',
-                                prefixIcon: Icon(Icons.search),
-                                filled: true,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide.none,
-                                ),
-                              ),
-                              onSubmitted: (dest) async {
-                                if (!mounted) return;
-                                setState(() {
-                                  _searchResultMessage = "🔄 Fetching live data & recommendation..."; // Updated loading message
-                                });
 
-                                final destinationInput = dest.trim();
-                                final destinationLower = destinationInput.toLowerCase();
-                                // String? servingBusId; // We might not need servingBusId anymore if prompt handles finding best option
-
-                                try {
-                                  // 1. Ensure Current Location is Available
-                                  if (_currentPosition == null) {
-                                    await _initLocation(); // Make sure we have user's location
-                                    if (!mounted) return;
-                                    if (_currentPosition == null) {
-                                      throw Exception("Could not get your current location.");
-                                    }
-                                  }
-
-                                  // 2. Fetch FRESH Live Bus Context right now
-                                  final liveContext = await _fetchLiveBusContext();
-                                  if (!mounted) return;
-                                  if ((liveContext['assignments'] as Map? ?? {}).isEmpty && (liveContext['segments'] as Map? ?? {}).isEmpty) {
-                                    // This might happen if _fetchLiveBusContext caught an error and returned empty maps
-                                    throw Exception("Failed to fetch live bus activity data.");
-                                  }
-
-                                  final allKnownStopNames = (liveContext['stopLocations'] as Map<String, LatLng>? ?? {}).keys.map((k) => k.toLowerCase()).toSet();
-                                  if (!allKnownStopNames.contains(destinationLower)) {
-                                   debugPrint("Destination '$destinationInput' not found in known stop names. Letting AI determine route.");
-                                  }
-                                  final prompt = _buildLivePrompt(
-                                    destinationInput, // User's query
-                                    liveContext,      // The fetched live data
-                                    _currentPosition!,// User's location
-                                  );
-                                  debugPrint("--- Live Gemini Prompt ---\n$prompt");
-
-                                  // 4. Call Gemini API
-                                  final aiResponse = await _callGemma(prompt); // Use your existing _callGemma
-                                  debugPrint("--- Live Gemini Response ---\n$aiResponse");
-                                  if (!mounted) return;
-
-                                  // 5. Display Result
-                                  setState(() => _searchResultMessage = aiResponse);
-
-                                } catch (e, stackTrace) {
-                                  if (!mounted) return;
-                                  debugPrint("Error getting live suggestion: $e\n$stackTrace");
-                                  setState(() {
-                                    _searchResultMessage = "⚠️ Error getting recommendation: ${e.toString().replaceFirst('Exception: ', '')}";
-                                  });
-                                }
-                              }, // End of onSubmitted
-                            ),
-
-                            if (_searchResultMessage != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8.0),
-                                child: Card(
-                                  color: Colors.purple[50],
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(12.0),
-                                    child: Text(
-                                      _searchResultMessage!,
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
                       if (_nearbyBusAlertMessage != null && _nearbyBusAlertMessage!.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 12.0, bottom: 4.0), // Adjust padding as needed
@@ -688,43 +722,6 @@ NOW, provide the recommendation based on the data and requirements:
                         ),
 
                       SizedBox(height: 12),
-
-                      // your map container, unchanged:
-                      Container(
-                        height: 150,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: _currentPosition != null
-                            ? ClipRRect(
-                          borderRadius: BorderRadius.circular(5),
-                          child: GoogleMap(
-                            initialCameraPosition: CameraPosition(
-                              target: _currentPosition!,
-                              zoom: 15,
-                            ),
-                            onMapCreated: (c) => _mapController = c,
-
-                            // ← add this:
-                            onTap: (LatLng tappedPoint) {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => LiveCrowdScreen(
-                                    initialLocation: _currentPosition!,
-                                  ),
-                                ),
-                              );
-                            },
-                            myLocationEnabled: true,
-                            zoomControlsEnabled: false,
-                          ),
-                        )
-                            : Center(child: CircularProgressIndicator()),
-                      ),
-                      SizedBox(height: 12),
-
-                      // your ListView, unchanged:
                       ListView(
                         shrinkWrap: true,
                         physics: NeverScrollableScrollPhysics(),

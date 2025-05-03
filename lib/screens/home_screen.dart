@@ -46,7 +46,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _busPositionUpdateTimer; // To refresh the bus position
   Map<String, Color> _busColors = {}; // To store bus colors
   Map<String, BitmapDescriptor> _busIcons = {}; // To store bus icons
-  Map<String, List<LatLng>> _busPaths = {}; // To store full bus paths
   Map<String, LatLng> _liveBusPositions = {}; // Temp store for live positions
   StreamSubscription? _liveBusPositionSubscription;
   Map<String, List<String>> _routes = {};
@@ -457,10 +456,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final Map<String, String> liveAssignments = liveContext['assignments'] as Map<String, String>? ?? {};
     final Map<String, List<Map<String, dynamic>>> liveSegments = liveContext['segments'] as Map<String, List<Map<String, dynamic>>>? ?? {};
     final Map<String, LatLng> stopLocations = liveContext['stopLocations'] as Map<String, LatLng>? ?? {};
-
-
-    // --- Format Live Bus Info ---
-    // (Keep the same formatting as before - provides necessary data for the AI)
     String liveBusInfo = "ACTIVE BUSES (LIVE DATA):\n";
     if (liveAssignments.isEmpty) {
       liveBusInfo += "  No active buses found.\n";

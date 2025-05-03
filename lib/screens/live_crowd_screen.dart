@@ -1289,6 +1289,25 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
       });
     }
   }
+  // Add this function inside _LiveCrowdScreenState class
+  void _handleLocationBoxTap(String stopName) {
+    if (stopName == 'Unknown Stop') return; // Don't proceed if name is invalid
+
+    // Construct the query for Gemini
+    // Ask for directions TO the tapped stop AND the status of buses serving it.
+    String query = "How do I get to the '$stopName' bus stop right now? Also, what's the status of buses (like A1, B2 etc.) serving this stop - have any passed recently or are any arriving soon?";
+
+    print("Querying Gemini for stop: $stopName"); // For debugging
+
+    // Show the chat modal if it's not already visible
+    // You might want to check if it's open first, or just call it.
+    // Calling it ensures it opens if closed.
+    _showChatModal();
+
+    // Use the existing function to send the query.
+    // _sendUserQuery will handle adding context and showing the response.
+    _sendUserQuery(query);
+  }
   @override
   void dispose() {
     _recorder.dispose();
@@ -1459,8 +1478,15 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
         itemCount: _busStops.length,
         itemBuilder: (context, index) {
           final stop = _busStops[index];
+          final String stopName = stop['name'] as String? ?? 'Unknown Stop';
           double crowd = (stop['crowd'] as int).toDouble();
-          return Container(
+
+          return GestureDetector(
+              onTap: () {
+                // Call a new function to handle the tap
+                _handleLocationBoxTap(stopName);
+              },
+          child:  Container(
             width: 90,
             margin: EdgeInsets.symmetric(horizontal: 4),
             padding: EdgeInsets.all(4),
@@ -1487,7 +1513,7 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
                 Text("${stop['crowd']} ppl", style: TextStyle(fontSize: 10)),
               ],
             ),
-          );
+          ),);
         },
       ),
     );

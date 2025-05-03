@@ -1003,8 +1003,22 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
     if (!loaded) {
       return Scaffold(
         appBar: AppBar(
-          title: Text('Bus Tracker'),
-          backgroundColor: Colors.purple[600],
+          // 1️⃣ Match the HomeScreen’s light purple:
+          backgroundColor: Colors.purple[100],
+          elevation: 0,
+
+          // 2️⃣ Make it taller so the title sits lower:
+          toolbarHeight: 80,
+
+          // 3️⃣ Ensure icons/text contrast on the light background:
+          iconTheme: IconThemeData(color: Colors.black),
+          titleTextStyle: TextStyle(color: Colors.black, fontSize: 20, fontWeight: FontWeight.bold),
+
+          // 4️⃣ Add extra top padding around the title:
+          title: Padding(
+            padding: const EdgeInsets.only(top: 20.0),
+            child: Text('Bus Tracker'),
+          ),
         ),
         body: Center(child: CircularProgressIndicator()),
       );
@@ -1018,13 +1032,25 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: Colors.purple[100],
+        elevation: 0,
+        toolbarHeight: 80,
+        centerTitle: true,
+
+        iconTheme: IconThemeData(color: Colors.black),
+        titleTextStyle: TextStyle(
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+
+        // no more manual top-padding here—AppBar will center it vertically
         title: Text('Bus Tracker'),
-        backgroundColor: Colors.purple[600],
       ),
       body: GoogleMap(
         onMapCreated: (ctrl) {
           _mapController = ctrl;
-          ctrl.moveCamera(CameraUpdate.newLatLngZoom(center, 14));
+          ctrl.moveCamera(CameraUpdate.newLatLngZoom(center, 15));
         },
         initialCameraPosition: CameraPosition(target: center, zoom: 13),
         markers: _allMarkers,
@@ -1033,5 +1059,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
         myLocationButtonEnabled: false,
       ),
     );
+
   }
 }

@@ -49,6 +49,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, LatLng> _liveBusPositions = {}; // Temp store for live positions
   StreamSubscription? _liveBusPositionSubscription;
   Map<String, List<String>> _routes = {};
+  final List<String> _destinations = [
+    'Aman Damai',
+    'Informm',
+    'Stor Kimia',
+    'BHEPA',
+    'DKSK',
+    'SOLLAT',
+    'HBP',
+    'PHS',
+    'Eureka',
+    'Harapan',
+  ];
+  String? _selectedDestination;
 
   @override
   void initState() {
@@ -262,57 +275,79 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _processBusActivitySnapshot(QuerySnapshot snapshot) {
+    // 1) Bail out early if we’re not ready
     if (!mounted || _nearestStopName == null) {
       debugPrint("Skipping snapshot processing: Not mounted or nearest stop unknown.");
-      return; // Exit if not mounted or nearest stop isn't set
+      return;
     }
 
-    String? foundMessage; // Temporary variable to hold a potential message
-
-    // Iterate through each active bus document
+    // 2) Find any bus arriving < 3 min at the nearest stop
+    String? foundMessage;
     for (var doc in snapshot.docs) {
       final data = doc.data() as Map<String, dynamic>?;
       if (data == null) continue;
 
       final busCode = data['busCode'] as String?;
-      final stopsListRaw = data['stops'] as List?; // List of Maps: {name, eta, crowd, location}
+      final stopsList = data['stops'] as List<dynamic>?;  // [{name, eta, …}, ...]
 
-      if (busCode == null || stopsListRaw == null) continue;
-
-      // Check the stops for *this specific bus*
-      for (var item in stopsListRaw) {
+      if (busCode == null || stopsList == null) continue;
+      for (var item in stopsList) {
         if (item is Map<String, dynamic>) {
           final stopName = item['name'] as String?;
-          final etaRaw = item['eta'];
-
-          // Check if this stop is the nearest one we care about
-          if (stopName != null && stopName == _nearestStopName) {
+          final etaRaw   = item['eta'];
+          if (stopName == _nearestStopName) {
             final int? eta = (etaRaw is num) ? etaRaw.toInt() : null;
-
-            // Check if ETA is valid and less than 3 minutes
-            if (eta != null && eta >= 0 && eta < 3) {
-              // Found a bus arriving soon at the nearest stop!
+            if (eta != null && eta >= 0 && eta < 5) {
               foundMessage = "🚍 Bus $busCode arriving at $_nearestStopName in $eta minute${eta == 1 ? '' : 's'}!";
-              debugPrint("Found nearby alert: $foundMessage");
-              break; // Stop checking other stops for *this* bus
+              break;
             }
           }
         }
-      } // End loop through stops for one bus
-
-      if (foundMessage != null) {
-        break; // Stop checking other buses once we found one meeting the criteria
       }
-    } // End loop through all bus documents
+      if (foundMessage != null) break;
+    }
 
-    // Update the state *once* after checking all buses
-    // Use the temporary 'foundMessage'. If it's null, no bus met the criteria.
-    if (mounted && _nearbyBusAlertMessage != foundMessage) { // Only update state if message changed
+    if (mounted && _nearbyBusAlertMessage != foundMessage) {
       setState(() {
         _nearbyBusAlertMessage = foundMessage;
       });
+
+      if (foundMessage != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              behavior: SnackBarBehavior.floating,
+              margin: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              backgroundColor: Colors.lightGreen[100],
+              content: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.orange[800]),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      foundMessage!,
+                      style: TextStyle(
+                        color: Colors.green[800],
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              duration: Duration(seconds: 5),
+              action: SnackBarAction(
+                label: 'OK',
+                textColor: Colors.green[800],
+                onPressed: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+              ),
+            ),
+          );
+        });
+      }
     }
   }
+
 
   Future<void> _fetchUserRole() async {
     final doc = await FirebaseFirestore.instance
@@ -889,6 +924,8 @@ NOW, provide the recommendation based on the data and requirements:
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
+    final raw = _searchResultMessage ?? '';
+    final displayMessage = raw.split('```').first.trim();
     return Scaffold(
       backgroundColor: Colors.purple[100],
       body: SafeArea(
@@ -899,29 +936,38 @@ NOW, provide the recommendation based on the data and requirements:
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.only(top: 26.0, left: 16.0, right: 16.0), // Added top: 10.0
+                  padding: const EdgeInsets.only(top: 40.0, left: 16.0, right: 16.0), // Added top: 10.0
                   child: Text(
                     'Hello, Intan',
                     style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
                   ),
                 ),
-                SizedBox(height: 30),
+                SizedBox(height: 10),
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 20),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextField(
+                      DropdownButtonFormField<String>(
+                        value: _selectedDestination,
                         decoration: InputDecoration(
                           hintText: 'Search destination',
-                          prefixIcon: Icon(Icons.search),
+                          // 2️⃣ move the search icon to the right:
+                          suffixIcon: Icon(Icons.search),
                           filled: true,
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(10),
                             borderSide: BorderSide.none,
                           ),
                         ),
-                        onSubmitted: (dest) async {
+                        items: _destinations.map((dest) {
+                          return DropdownMenuItem(
+                            value: dest,
+                            child: Text(dest),
+                          );
+                        }).toList(),
+                        onChanged: (dest) async {
+                          if (!mounted || dest == null) return;
                           if (!mounted) return;
                           setState(() {
                             _searchResultMessage = "🔄 Fetching live data & recommendation..."; // Updated loading message
@@ -1065,24 +1111,6 @@ NOW, provide the recommendation based on the data and requirements:
                           }
                         }, // End of onSubmitted
                       ),
-
-                      if (_searchResultMessage != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Card(
-                            color: Colors.purple[50],
-                            child: Padding(
-                              padding: const EdgeInsets.all(12.0),
-                              child: Text(
-                                _searchResultMessage!,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),
@@ -1127,67 +1155,71 @@ NOW, provide the recommendation based on the data and requirements:
                 SizedBox(height: 30),
                 Container(
                   width: double.infinity,
+                  // adapt the height as you like (or remove if you want it to size to content)
                   height: MediaQuery.of(context).size.height * 0.85,
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
-
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-
-                      if (_nearbyBusAlertMessage != null && _nearbyBusAlertMessage!.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 12.0, bottom: 4.0), // Adjust padding as needed
-                          child: Card(
-                            color: Colors.lightGreen[100], // Use a distinct color
-                            elevation: 2,
-                            child: Padding(
-                              padding: const EdgeInsets.all(12.0),
-                              child: Row( // Use Row for Icon and Text
-                                children: [
-                                  Icon(Icons.warning_amber_rounded, color: Colors.orange[800], size: 20,),
-                                  SizedBox(width: 8),
-                                  Expanded( // Allow text to wrap
-                                    child: Text(
-                                      _nearbyBusAlertMessage!,
-                                      style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.green[800],
-                                      ),
-                                    ),
+                  child: SingleChildScrollView(
+                    // wrap in a scroll view so the infographic + list can scroll together
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // —————— GEMINI SUGGESTION CARD ——————
+                        if (displayMessage != null && displayMessage.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16.0),
+                            child: Card(
+                              color: Colors.purple[50],
+                              elevation: 2,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12.0),
+                                child: Text(
+                                  displayMessage,  // ← safe, never null here
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
 
-                      SizedBox(height: 12),
-                      ListView(
-                        shrinkWrap: true,
-                        physics: NeverScrollableScrollPhysics(),
-                        children: [
-                          _sectionCard(
-                            'Frequent destination',
-                            'To: Your school\n • 10 minutes • Arrive at 9:51 am',
-                          ),
-                          SizedBox(height: 10),
-                          _sectionCard(
-                            'Favourites',
-                            '🏫 Your school: School of Computer Sciences\n🏋️‍♀️ Gym: Tan Sri Azman Hashim Centre',
-                          ),
-                          SizedBox(height: 10),
-                          _sectionCard(
-                            'Recent journeys',
-                            'Hamzah Sendut 2 → KOMCA\nNasi Kandar RM1 → USM',
-                          ),
-                        ],
-                      ),
-                    ],
+                        // —————— OTHER SECTION CARDS ——————
+                        ListView(
+                          shrinkWrap: true,
+                          physics: NeverScrollableScrollPhysics(),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16.0),
+                              child: Image.asset(
+                                'assets/route_infographic.png',
+                                fit: BoxFit.contain,
+                                // you can also constrain height/width here
+                              ),
+                            ),
+                            _sectionCard(
+                              'Frequent destination',
+                              'To: Your school\n • 10 minutes • Arrive at 9:51 am',
+                            ),
+                            SizedBox(height: 10),
+                            _sectionCard(
+                              'Favourites',
+                              '🏫 Your school: School of Computer Sciences\n🏋️‍♀️ Gym: Tan Sri Azman Hashim Centre',
+                            ),
+                            SizedBox(height: 10),
+                            _sectionCard(
+                              'Recent journeys',
+                              'Hamzah Sendut 2 → KOMCA\nNasi Kandar RM1 → USM',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 SizedBox(height: 16), // bottom spacing so scroll doesn’t end flush to nav bar

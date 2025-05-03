@@ -24,19 +24,14 @@ class BusAnimationService with ChangeNotifier {
   final _timers = <String, Timer>{};
   final positions = <String, LatLng>{};
   final progress  = <String, double>{};
-  // …other state: _busIndex, _busPaths, assignments, etc.
+  BitmapDescriptor? _checkIcon; // Add state variable for check icon
+  BitmapDescriptor? _warningIcon; // Add state variable for warning icon
 
   Future<void> initOnce() async {
-    if (_timers.isNotEmpty) return; // already started
-    // 1) fetch routes & stops
-    // 2) compute segments
-    // 3) build paths
-    // 4) start Timer.periodic for each bus, updating positions & progress…
-    //    when a route reaches progress>=1, reset or stop that one
+    if (_timers.isNotEmpty) return;
     notifyListeners();
   }
 }
-
 
 class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepAliveClientMixin {
   int _selectedIndex = 0;
@@ -48,7 +43,8 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
   BitmapDescriptor? _busIcon;
   Map<String, List<LatLng>> _busPaths = {};
   final Map<String, Timer> _busTimers = {};
-
+  BitmapDescriptor? _checkIcon;
+  BitmapDescriptor? _warningIcon;
 
   Map<String,int>   _busIndex     = {};             // which stop we’re at
   Map<String,LatLng> _busPositions = {};            // actual marker pos
@@ -243,105 +239,221 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
     final path = _busPaths[busId] ?? [];
     final segmentIndex = (currentProgress * (path.length - 1)).floor();
     final segmentProgress = (currentProgress * (path.length - 1)) - segmentIndex;
+    final designatedStops = _routes[letter]!;
+    final assignedStopsFromState = _busSegments[busId]?.map((s) => s['name'] as String).toSet() ?? {};
 
-    // Get which stops are actually being serviced
     final servicedStops = _busSegments[busId]?.map((s) => s['name'] as String).toList() ?? [];
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => DraggableScrollableSheet(
         expand: false,
+        initialChildSize: 0.6,
+        minChildSize: 0.4,
+        maxChildSize: 0.9,
         builder: (ctx, sc) => Column(
           children: [
-            SizedBox(height: 12),
-            Text('Bus $code', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            Text('${stops.first} → ${stops.last}'),
+            Container(
+              margin: EdgeInsets.only(top: 8, bottom: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Text('Bus $code Route Details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('${designatedStops.first} → ${designatedStops.last}'),
+            Divider(),
             Expanded(
-              child: ListView.builder(
-                controller: sc,
-                itemCount: stops.length,
-                itemBuilder: (_, i) {
-                  final isServiced = servicedStops.contains(stops[i]);
-                  final isCurrent = i == segmentIndex ||
-                      (i == segmentIndex + 1 && segmentProgress > 0.5);
-                  final isPassed = i < segmentIndex ||
-                      (i == segmentIndex && segmentProgress > 0.5);
+              child: StreamBuilder<DocumentSnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('busActivity')
+                    .doc(busId)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return Center(child: CircularProgressIndicator());
+                  }
+                  if (!snapshot.hasData || snapshot.data?.data() == null) {
+                    return Center(child: Text('No live data available for bus $code.'));
+                  }
+                  if (snapshot.hasError) {
+                    return Center(child: Text('Error loading live data: ${snapshot.error}'));
+                  }
 
-                  return Column(
-                    children: [
-                      // Timeline connector (except for first item)
-                      if (i > 0)
-                        Container(
+                  final liveData = snapshot.data!.data() as Map<String, dynamic>;
+                  final liveStopsRaw = liveData['stops'] as List?;
+                  final liveBusPosition = liveData['currentPosition'] as GeoPoint?;
+
+                  final liveStopInfo = <String, Map<String, dynamic>>{};
+                  if (liveStopsRaw != null) {
+                    for (var item in liveStopsRaw) {
+                      if (item is Map<String, dynamic>) {
+                        final name = item['name'] as String?;
+                        final etaRaw = item['eta'];
+                        final crowdRaw = item['crowd'];
+                        final eta = (etaRaw is num) ? etaRaw.toInt() : null;
+                        final crowd = (crowdRaw is num) ? crowdRaw.toInt() : 0;
+                        if (name != null && eta != null) {
+                          liveStopInfo[name] = {'eta': eta, 'crowd': crowd};
+                        }
+                      }
+                    }
+                  }
+
+                  int lastPassedIndex = -1;
+                  for (int i = 0; i < designatedStops.length; i++) {
+                    final stopName = designatedStops[i];
+                    final info = liveStopInfo[stopName];
+                    if (info != null && info['eta'] < 0) {
+                      lastPassedIndex = i;
+                    } else {
+                      break;
+                    }
+                  }
+                  final currentSegmentIndex = lastPassedIndex + 1;
+
+                  final stateProgress = _busProgress[busId] ?? 0.0;
+                  final statePath = _busPaths[busId] ?? [];
+                  final int stateSegmentIndex;
+                  final double stateSegmentProgress;
+
+                  if (statePath.length > 1) {
+                    final rawSegmentIndex = (stateProgress * (statePath.length - 1));
+                    stateSegmentIndex = rawSegmentIndex.floor().clamp(0, statePath.length - 2);
+                    stateSegmentProgress = rawSegmentIndex - stateSegmentIndex;
+                  } else {
+                    stateSegmentIndex = 0;
+                    stateSegmentProgress = 0.0;
+                  }
+
+                  return ListView.builder(
+                    controller: sc,
+                    itemCount: designatedStops.length,
+                    itemBuilder: (_, i) {
+                      final stopName = designatedStops[i];
+                      final stopLocation = _stopLocations[stopName];
+
+                      final currentLiveInfo = liveStopInfo[stopName];
+                      final liveEta = currentLiveInfo?['eta'] as int?;
+                      final liveCrowd = currentLiveInfo?['crowd'] as int? ?? '?';
+
+                      final bool isPassed = liveEta != null && liveEta < 0;
+                      final bool isSkipped = !assignedStopsFromState.contains(stopName);
+                      final bool isCurrentStop = i == currentSegmentIndex && i < designatedStops.length;
+                      final bool isApproachingStop = i == currentSegmentIndex + 1 && i < designatedStops.length;
+
+                      Widget leadingIconWidget;
+                      if (isPassed && !isSkipped) {
+                        leadingIconWidget = _checkIcon != null
+                            ? ImageIcon(AssetImage('assets/check_icon.png'), color: _busColors[code]?.withOpacity(0.8) ?? Colors.grey, size: 20)
+                            : Icon(Icons.check_circle, color: _busColors[code]?.withOpacity(0.8) ?? Colors.grey, size: 20);
+                      } else if (isSkipped) {
+                        leadingIconWidget = _warningIcon != null
+                            ? ImageIcon(AssetImage('assets/warning_icon.png'), color: Colors.orangeAccent, size: 20)
+                            : Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 20);
+                      } else {
+                        leadingIconWidget = Container(
+                          width: 20,
                           height: 20,
-                          width: 2,
-                          color: isPassed
-                              ? _busColors[code]!.withOpacity(isServiced ? 0.8 : 0.3)
-                              : Colors.grey[300],
-                          margin: EdgeInsets.only(left: 11),
-                        ),
-                      // Stop item
-                      ListTile(
-                        leading: Container(
-                          width: 24,
-                          height: 24,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: isCurrent
+                            color: isCurrentStop
                                 ? _busColors[code]!
-                                : isServiced
-                                ? _busColors[code]!.withOpacity(isPassed ? 0.8 : 0.5)
                                 : Colors.grey[300],
                             border: Border.all(
-                              color: _busColors[code]!,
-                              width: isServiced ? 2 : 1,
+                              color: _busColors[code] ?? Colors.grey,
+                              width: 1.5,
                             ),
                           ),
-                          child: i == 0
-                              ? Icon(Icons.trip_origin, size: 12, color: Colors.white)
+                          child: i == 0 && !isPassed && !isSkipped
+                              ? Icon(Icons.trip_origin, size: 10, color: Colors.white)
                               : null,
-                        ),
-                        title: Text(
-                          stops[i],
-                          style: TextStyle(
-                            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                            color: isServiced ? Colors.black : Colors.grey,
-                          ),
-                        ),
-                        subtitle: isCurrent
-                            ? Text(
-                          segmentProgress > 0.5 && i < stops.length - 1
-                              ? 'Heading to ${stops[i+1]}'
-                              : 'At ${stops[i]}',
-                          style: TextStyle(color: _busColors[code]!),
-                        )
-                            : null,
-                      ),
-                      // Bus position indicator
-                      if (isCurrent)
-                        Padding(
-                          padding: EdgeInsets.only(left: 24),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.directions_bus,
-                                color: _busColors[code]!,
-                                size: 20,
+                        );
+                      }
+
+                      Widget timelineConnector = SizedBox.shrink();
+                      if (i > 0) {
+                        final prevStopName = designatedStops[i - 1];
+                        final prevLiveInfo = liveStopInfo[prevStopName];
+                        final prevLiveEta = prevLiveInfo?['eta'] as int?;
+                        final prevIsPassed = prevLiveEta != null && prevLiveEta < 0;
+                        final prevIsSkipped = !assignedStopsFromState.contains(prevStopName);
+
+                        Color connectorColor = Colors.grey[300]!;
+
+                        if (prevIsPassed && !prevIsSkipped) {
+                          connectorColor = _busColors[code]?.withOpacity(0.7) ?? Colors.grey;
+                        } else if (prevIsSkipped) {
+                          connectorColor = Colors.orangeAccent.withOpacity(0.5);
+                        }
+
+                        timelineConnector = Container(
+                          height: 20,
+                          width: 2,
+                          color: connectorColor,
+                          margin: EdgeInsets.only(left: 9),
+                        );
+                      }
+
+
+                      return Column(
+                        children: [
+                          timelineConnector,
+                          ListTile(
+                            dense: true,
+                            leading: Padding(
+                              padding: const EdgeInsets.only(top: 4.0),
+                              child: leadingIconWidget,
+                            ),
+                            title: Text(
+                              stopName,
+                              style: TextStyle(
+                                fontWeight: isCurrentStop ? FontWeight.bold : FontWeight.normal,
+                                color: isSkipped ? Colors.grey[500] : Colors.black,
+                                decoration: isSkipped || (isPassed && !isSkipped)
+                                    ? TextDecoration.lineThrough
+                                    : TextDecoration.none,
+                                decorationColor: isSkipped ? Colors.orangeAccent : (_busColors[code] ?? Colors.grey),
                               ),
-                              SizedBox(width: 8),
-                              Expanded(
-                                child: LinearProgressIndicator(
-                                  value: i == segmentIndex
-                                      ? segmentProgress
-                                      : 1 - segmentProgress,
-                                  backgroundColor: Colors.grey[200],
-                                  valueColor: AlwaysStoppedAnimation(_busColors[code]!),
-                                ),
+                            ),
+                            subtitle: liveEta != null && !isSkipped
+                                ? Text(
+                              "ETA: ${liveEta >= 0 ? '$liveEta min' : 'Passed'} | Crowd: $liveCrowd",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isPassed ? Colors.grey : Colors.black54,
                               ),
-                            ],
+                            )
+                                : (isSkipped ? Text("Not scheduled for pickup", style: TextStyle(fontSize: 12, color: Colors.orangeAccent)) : null) ,
+                            trailing: isCurrentStop
+                                ? Icon(Icons.directions_bus, color: _busColors[code], size: 18)
+                                : null,
                           ),
-                        ),
-                    ],
+                          if (i == currentSegmentIndex && currentSegmentIndex > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 24, right: 16, bottom: 5),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: LinearProgressIndicator(
+                                      value: (stateSegmentIndex == i-1) ? stateSegmentProgress : 0.0,
+                                      minHeight: 2,
+                                      backgroundColor: Colors.grey[200],
+                                      valueColor: AlwaysStoppedAnimation(_busColors[code]!),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      );
+                    },
                   );
                 },
               ),
@@ -893,8 +1005,22 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
     if (!loaded) {
       return Scaffold(
         appBar: AppBar(
-          title: Text('Bus Tracker'),
-          backgroundColor: Colors.purple[600],
+          // 1️⃣ Match the HomeScreen’s light purple:
+          backgroundColor: Colors.purple[100],
+          elevation: 0,
+
+          // 2️⃣ Make it taller so the title sits lower:
+          toolbarHeight: 80,
+
+          // 3️⃣ Ensure icons/text contrast on the light background:
+          iconTheme: IconThemeData(color: Colors.black),
+          titleTextStyle: TextStyle(color: Colors.black, fontSize: 20, fontWeight: FontWeight.bold),
+
+          // 4️⃣ Add extra top padding around the title:
+          title: Padding(
+            padding: const EdgeInsets.only(top: 20.0),
+            child: Text('Bus Tracker'),
+          ),
         ),
         body: Center(child: CircularProgressIndicator()),
       );
@@ -908,13 +1034,25 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: Colors.purple[100],
+        elevation: 0,
+        toolbarHeight: 80,
+        centerTitle: true,
+
+        iconTheme: IconThemeData(color: Colors.black),
+        titleTextStyle: TextStyle(
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+
+        // no more manual top-padding here—AppBar will center it vertically
         title: Text('Bus Tracker'),
-        backgroundColor: Colors.purple[600],
       ),
       body: GoogleMap(
         onMapCreated: (ctrl) {
           _mapController = ctrl;
-          ctrl.moveCamera(CameraUpdate.newLatLngZoom(center, 14));
+          ctrl.moveCamera(CameraUpdate.newLatLngZoom(center, 15));
         },
         initialCameraPosition: CameraPosition(target: center, zoom: 13),
         markers: _allMarkers,
@@ -923,5 +1061,6 @@ class _BusTrackerScreenState extends State<BusTrackerScreen> with AutomaticKeepA
         myLocationButtonEnabled: false,
       ),
     );
+
   }
 }

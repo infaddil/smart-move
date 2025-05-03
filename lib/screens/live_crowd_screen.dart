@@ -798,8 +798,6 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
             audioInstruction
         );
 
-        // --- <<< END OF NEW CALL <<< ---
-
       } else {
         debugPrint("Stop recording returned null or empty path. Recording might have been too short or failed.");
         if (mounted) { // Check if widget is still in the tree
@@ -1126,7 +1124,6 @@ To reach '$displayIdentifiedName', I recommend going to the '$correctNearbyStopN
         return busStopsData.any((s) => s['name'] == stopName);
       }).map((e) => e.value).toList();
 
-      // Ensure crowd and eta are handled safely if potentially null
       final crowd = stop['crowd'] ?? '?';
       final eta = stop['eta'] ?? '?';
 

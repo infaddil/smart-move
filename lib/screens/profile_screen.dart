@@ -175,16 +175,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
+      // Modify the AppBar here
       appBar: AppBar(
-        backgroundColor: Colors.purple,
-        foregroundColor: Colors.white,
-        title: Text('Driver Profile'),
+        // --- Start Apply New Styles ---
+        backgroundColor: Colors.purple[100], // New background color
+        elevation: 0,                        // New elevation
+        toolbarHeight: 80,                   // New height
+        centerTitle: true,                   // Center the title
+        iconTheme: IconThemeData(color: Colors.black), // Style for leading icon (if any)
+        titleTextStyle: TextStyle(           // Style for the title text
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+        title: Text('Profile page'),       // Your new title text
+        // --- End Apply New Styles ---
+
+        // --- Keep the existing conditional actions ---
         actions: _user != null
-            ? [IconButton(onPressed: _signOut, icon: Icon(Icons.logout))]
-            : [],
+            ? [
+          IconButton(
+            onPressed: _signOut,
+            icon: Icon(
+                Icons.logout,
+                color: Colors.black // Explicitly set color to match iconTheme
+            ),
+          )
+        ]
+            : [], // Show no actions if user is null
+        // --- End Keep the existing conditional actions ---
       ),
       body: _user == null ? _buildSignInPrompt() : _buildProfileView(),
     );
+
 
   }
 
@@ -195,7 +218,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.directions_bus, size: 90, color: Colors.purple),
+            Icon(Icons.directions_bus, size: 90, color: Colors.purple[100]),
             SizedBox(height: 24),
             Text(
               'Are you a bus driver?\nSign in with your Google account to access your profile.',
@@ -208,8 +231,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               label: Text('Sign in with Google'),
               onPressed: _signInWithGoogle,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple,
-                foregroundColor: Colors.white,
+                backgroundColor: Colors.purple[100],
+                foregroundColor: Colors.black,
                 padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
             )

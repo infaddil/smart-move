@@ -60,7 +60,6 @@ class _LiveCrowdScreenState extends State<LiveCrowdScreen> {
   ];
   String? _selectedDestination;
 
-
   List<Map<String,dynamic>> _chatHistory = [];
   final TextEditingController _chatController = TextEditingController();
 

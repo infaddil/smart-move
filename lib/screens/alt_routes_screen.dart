@@ -25,7 +25,7 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   bool nearestStop = false;
   bool lowestHeadcount = false;
   bool bicycle = false;
-  bool walking = false;
+  bool walking = true;
   bool scooter = false;
 
   String? selectedDestination;
@@ -273,15 +273,68 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
       }
     }
   }
+// A reusable, “sleek” dropdown widget
+  /// A reusable, “sleek” dropdown widget
+  Widget _sleekDropdown({
+    required String label,
+    required String? value,
+    required List<String> items,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.purple.shade100),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButtonFormField<String>(
+          value: value,
+          dropdownColor: Colors.white,
+          icon: Icon(Icons.keyboard_arrow_down, color: Colors.purple[700]),
+          decoration: InputDecoration(
+            labelText: label,
+            labelStyle: TextStyle(color: Colors.purple[700], fontWeight: FontWeight.w600),
+            contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            border: InputBorder.none,
+          ),
+          items: items
+              .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+              .toList(),
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+
+
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        backgroundColor: Colors.purple,
-        foregroundColor: Colors.white,
-        title: Text('Suggested transportation'),
+        backgroundColor: Colors.purple[100],
+        elevation: 0,
+        toolbarHeight: 80,
+        centerTitle: true,
+
+        iconTheme: IconThemeData(color: Colors.black),
+        titleTextStyle: TextStyle(
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+
+        // no more manual top-padding here—AppBar will center it vertically
+        title: Text('Alternative transportation'),
       ),
       body: Column(
         children: [
@@ -294,47 +347,31 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
   }
 
   Widget _searchSection() {
+    final names = _busStops.map((s) => s['name'] as String).toList();
+
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DropdownButtonFormField<String>(
-            decoration: InputDecoration(
-              labelText: "From",
-              border: OutlineInputBorder(),
-              filled: true,
-              fillColor: Colors.white,
-            ),
+          _sleekDropdown(
+            label: 'From',
             value: selectedOrigin,
-            items: _busStops.map((stop) {
-              return DropdownMenuItem<String>(
-                value: stop['name'],
-                child: Text(stop['name']),
-              );
-            }).toList(),
-            onChanged: (value) => setState(() => selectedOrigin = value),
+            items: names,
+            onChanged: (v) => setState(() => selectedOrigin = v),
           ),
           SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            decoration: InputDecoration(
-              labelText: "To",
-              border: OutlineInputBorder(),
-              filled: true,
-              fillColor: Colors.white,
-            ),
+          _sleekDropdown(
+            label: 'To',
             value: selectedDestination,
-            items: _busStops.map((stop) {
-              return DropdownMenuItem<String>(
-                value: stop['name'],
-                child: Text(stop['name']),
-              );
-            }).toList(),
-            onChanged: (value) => setState(() => selectedDestination = value),
+            items: names,
+            onChanged: (v) => setState(() => selectedDestination = v),
           ),
           SizedBox(height: 10),
           currentLocation != null
-              ? Text("Current Location: ${currentLocation!.latitude.toStringAsFixed(4)}, ${currentLocation!.longitude.toStringAsFixed(4)}")
+              ? Text(
+              "Current Location: ${currentLocation!.latitude.toStringAsFixed(4)}, "
+                  "${currentLocation!.longitude.toStringAsFixed(4)}")
               : CircularProgressIndicator(),
           SizedBox(height: 10),
           Text("Depart now", style: TextStyle(color: Colors.black54)),
@@ -372,57 +409,9 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
             mainAxisSize: MainAxisSize.min, // Keep this
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("Bus Stop Preference", // Renamed from "Route Preference" for clarity?
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              RadioListTile<bool>(
-                title: Text("Least walking"),
-                value: true,
-                groupValue: leastWalking,
-                onChanged: (value) {
-                  // Important: Use Navigator.pop(context) BEFORE setState
-                  // if you want the sheet to close immediately after selection.
-                  // Otherwise, the state updates but the sheet remains open.
-                  // If you want it to stay open, keep setState here.
-                  Navigator.pop(context); // Example: Close sheet on selection
-                  setState(() {
-                    leastWalking = value!;
-                  });
-                },
-              ),
-              RadioListTile<bool>(
-                title: Text("Shortest time"),
-                value: false,
-                groupValue: leastWalking,
-                onChanged: (value) {
-                  Navigator.pop(context); // Example: Close sheet on selection
-                  setState(() {
-                    leastWalking = value!;
-                  });
-                },
-              ),
               Divider(color: Colors.grey[400]),
               Text("Transportation Preferences", // Renamed from "Bus Stop Preferences"?
                   style: TextStyle(fontWeight: FontWeight.bold)),
-              SwitchListTile(
-                value: nearestStop,
-                onChanged: (value) {
-                  // Note: For SwitchListTiles, the sheet usually stays open
-                  // while toggling. No need to pop here unless intended.
-                  setState(() {
-                    nearestStop = value;
-                  });
-                },
-                title: Text("Nearest stop"),
-              ),
-              SwitchListTile(
-                value: lowestHeadcount,
-                onChanged: (value) {
-                  setState(() {
-                    lowestHeadcount = value;
-                  });
-                },
-                title: Text("Lowest people headcount"),
-              ),
               SwitchListTile(
                 value: bicycle,
                 onChanged: (value) {
@@ -461,86 +450,81 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
 
   Widget _suggestedRoutesList() {
     if (selectedOrigin == null || selectedDestination == null) {
-      return Center(
-          child: Text("Please select both origin and destination."));
+      return Center(child: Text("Please select both origin and destination."));
     }
-    final origin =
-    _busStops.firstWhere((stop) => stop['name'] == selectedOrigin);
-    final destination =
-    _busStops.firstWhere((stop) => stop['name'] == selectedDestination);
-    final directDistance =
-    _calculateDistance(origin['location'], destination['location']);
+
+    final origin = _busStops.firstWhere((s) => s['name'] == selectedOrigin);
+    final destination = _busStops.firstWhere((s) => s['name'] == selectedDestination);
+    final directDistance = _calculateDistance(
+      origin['location'] as LatLng,
+      destination['location'] as LatLng,
+    );
 
     List<Widget> suggestions = [];
 
-    // Bus route suggestion logic:
+    // 1) Lowest-headcount bus
     if (lowestHeadcount) {
-      // Use live crowd data: choose stop with the smallest crowd.
-      final leastCrowded =
-      _busStops.reduce((a, b) => a['crowd'] < b['crowd'] ? a : b);
-      suggestions.add(_routeCard(
-        "Bus ETA: ${leastCrowded['eta']} mins",
-        "From ${origin['name']} to ${destination['name']} - Lowest headcount: ${leastCrowded['crowd']}",
-        Icons.directions_bus,
-      ));
+      final leastCrowded = _busStops.reduce((a, b) {
+        final num crowdA = (a['crowd'] ?? double.infinity) as num;
+        final num crowdB = (b['crowd'] ?? double.infinity) as num;
+        return crowdA < crowdB ? a : b;
+      });
+
+      // 2) Shortest-time bus
     } else if (!leastWalking) {
-      // Shortest time: calculate ETA from origin to each bus stop and pick the one with the lowest ETA.
       final fastestStop = _busStops.reduce((a, b) {
-        final etaA =
-        _estimateETA(_calculateDistance(origin['location'], a['location']));
-        final etaB =
-        _estimateETA(_calculateDistance(origin['location'], b['location']));
+        final etaA = _estimateETA(_calculateDistance(
+          origin['location'] as LatLng,
+          a['location'] as LatLng,
+        ));
+        final etaB = _estimateETA(_calculateDistance(
+          origin['location'] as LatLng,
+          b['location'] as LatLng,
+        ));
         return etaA < etaB ? a : b;
       });
-      final fastestETA = _estimateETA(
-          _calculateDistance(origin['location'], fastestStop['location']));
-      suggestions.add(_routeCard(
-        "Bus ETA: $fastestETA mins",
-        "From ${origin['name']} to ${destination['name']} - Fastest stop: ${fastestStop['name']}",
-        Icons.directions_bus,
+      final fastestETA = _estimateETA(_calculateDistance(
+        origin['location'] as LatLng,
+        fastestStop['location'] as LatLng,
       ));
+
+      // 3) Default (least walking)
     } else {
-      // Default (Least walking): use the direct distance from origin to destination.
-      suggestions.add(_routeCard(
-        "Bus ETA: ${_estimateETA(directDistance)} mins",
-        "From ${origin['name']} to ${destination['name']} (${directDistance.toStringAsFixed(2)} km)",
-        Icons.directions_bus,
-      ));
+      final etaDefault = _estimateETA(directDistance);
     }
 
+    // Bike
     if (bicycle) {
       suggestions.add(_routeCard(
         "Bike ETA: ${_estimateETA(directDistance, isBike: true)} mins",
-        "Provider: Bike Commute USM", // Updated subtitle
+        "Provider: Bike Commute USM",
         Icons.pedal_bike,
-        partnerName: "Bike Commute USM", // Pass partner name
-        onBookNow: () => _navigateToPayment("Bike Commute USM", directDistance), // Add callback
-      ));
-    }
-    if (scooter) {
-      // Assuming scooter speed is similar to bicycle for ETA calculation
-      suggestions.add(_routeCard(
-        "Scooter ETA: ${_estimateETA(directDistance, isBike: true)} mins", // Use bike speed for now, adjust if needed
-        "Provider: Beam", // Subtitle with provider
-        Icons.electric_scooter, // Use an appropriate icon
-        partnerName: "Beam", // Pass partner name
-        onBookNow: () => _navigateToPayment("Beam", directDistance), // Add callback
+        partnerName: "Bike Commute USM",
+        onBookNow: () => _navigateToPayment("Bike Commute USM", directDistance),
       ));
     }
 
-    // Walking suggestion - only added if toggled on.
+    // Scooter
+    if (scooter) {
+      suggestions.add(_routeCard(
+        "Scooter ETA: ${_estimateETA(directDistance, isBike: true)} mins",
+        "Provider: Beam",
+        Icons.electric_scooter,
+        partnerName: "Beam",
+        onBookNow: () => _navigateToPayment("Beam", directDistance),
+      ));
+    }
+
+    // Walking
     if (walking) {
       suggestions.add(_routeCard(
         "Walk ETA: ${_estimateETA(directDistance, isWalking: true)} mins",
-        "From ${origin['name']} to ${destination['name']} walking",
+        "Walking from ${origin['name']} → ${destination['name']}",
         Icons.directions_walk,
       ));
     }
 
-    return ListView(
-      padding: EdgeInsets.all(16),
-      children: suggestions,
-    );
+    return ListView(padding: EdgeInsets.all(16), children: suggestions);
   }
 
   Widget _routeCard(String title, String subtitle, IconData icon, {VoidCallback? onBookNow, String? partnerName}) {

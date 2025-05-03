@@ -386,8 +386,8 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
       child: ElevatedButton(
         onPressed: _showPreferencesBottomSheet,
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.purple,
-          foregroundColor: Colors.white,
+          backgroundColor: Colors.purple[100],
+          foregroundColor: Colors.black,
         ),
         child: Text("Transportation Preferences"),
       ),
@@ -551,8 +551,10 @@ class _AltRoutesScreenState extends State<AltRoutesScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green, // Choose a color
                     foregroundColor: Colors.white,
+                    minimumSize: Size(double.infinity, 48),
                   ),
                   child: Text("Book Now with $partnerName"),
+
                 ),
               ),
           ],

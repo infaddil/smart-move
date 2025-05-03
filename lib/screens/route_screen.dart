@@ -28,6 +28,7 @@ class _RouteScreenState extends State<RouteScreen> {
   List<Map<String, dynamic>> _assignedPickupStops = [];
   Map<String, LatLng> _allStopLocations = {};
   bool _isLoading = true; // Flag to show loading indicator
+  int _originalStopCount = 0;
 
   List<Map<String, dynamic>> _pickupStops = [];
   String? _currentPickupMessage;
@@ -118,11 +119,13 @@ class _RouteScreenState extends State<RouteScreen> {
     setState(() {
       _isLoading = true;
     });
+
     final userDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(_currentUser!.uid)
         .get();
     final busActivityId = userDoc.data()!['busActivityId'] as String;
+
     final activityDoc = await FirebaseFirestore.instance
         .collection('busActivity')
         .doc(busActivityId)
@@ -130,28 +133,30 @@ class _RouteScreenState extends State<RouteScreen> {
     if (!activityDoc.exists) {
       setState(() {
         _assignedPickupStops = [];
-        _isLoading = false;
+        _originalStopCount   = 0;
+        _isLoading           = false;
       });
       return;
     }
+
     final rawStops = activityDoc.data()!['stops'] as List<dynamic>;
     final stops = rawStops.map((e) {
-      final m = e as Map<String, dynamic>;
+      final m  = e as Map<String, dynamic>;
       final gp = m['location'] as GeoPoint;
       return {
-        'name': m['name'] as String,
-        'crowd': (m['crowd'] as num).toInt(),
-        'eta': (m['eta'] as num).toInt(),
+        'name':     m['name']  as String,
+        'crowd':    (m['crowd'] as num).toInt(),
+        'eta':      (m['eta']   as num).toInt(),
         'location': LatLng(gp.latitude, gp.longitude),
       };
     }).toList();
+
     setState(() {
       _assignedPickupStops = stops;
-      _isLoading = false;
+      _originalStopCount   = stops.length;
+      _isLoading           = false;
     });
   }
-
-
   Future<bool> _checkAndRequestLocationPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -328,54 +333,68 @@ class _RouteScreenState extends State<RouteScreen> {
     });
   }
 
-  void _moveToNextStop() {
+  Future<void> _moveToNextStop() async {
     if (!mounted) return;
+
+    // 1) If there are no stops at all, bail:
     if (_assignedPickupStops.isEmpty) {
-      // This case should ideally be handled by disabling the button, but double-check
-      setState(() {
-        _currentPickupMessage = "All pickups completed!";
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("All pickups completed")), // Use const
-      );
       return;
     }
 
-    // Process the current stop (first in list) before removing
+    // 2) Complete the current (first) stop
     final currentStop = _assignedPickupStops.first;
     debugPrint("Completed pickup at: ${currentStop['name']}");
-    // ---> TODO: Add any logic needed when arriving/leaving a stop (e.g., update Firestore) <---
 
-    // Remove the completed stop
+    // 3) Remove it
     setState(() {
       _assignedPickupStops.removeAt(0);
     });
 
-    // Check if there are more stops
+    // 4) If there are more stops, show the next:
     if (_assignedPickupStops.isNotEmpty) {
-      final nextStop = _assignedPickupStops.first;
-      // Animate to the *next* stop.
-      _mapController?.animateCamera( // Use null-aware call
-        CameraUpdate.newLatLngZoom(nextStop['location'], 17),
+      final next = _assignedPickupStops.first;
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(next['location'], 17),
       );
-      // Update the message for the new next stop
       setState(() {
-        _currentPickupMessage = "Picking up at: ${nextStop['name']}";
+        _currentPickupMessage = "Picking up at: ${next['name']}";
       });
-    } else {
-      // Last stop was just completed
+    }
+    // 5) Otherwise, we just finished the last one → award!
+    else {
       setState(() {
         _currentPickupMessage = "All pickups completed!";
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("All pickups completed!")), // Use const
+        const SnackBar(content: Text("All pickups completed!")),
       );
-      // Optionally stop location updates if no longer needed
-      // _positionStreamSubscription?.cancel();
+
+      // **THIS** is where we actually give the points:
+      await _awardUserPoints(_originalStopCount);
     }
   }
 
-  @override
+  Future<void> _awardUserPoints(int stopsCount) async {
+    final userRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid);
+
+    // read current
+    final snap = await userRef.get();
+    final current = (snap.data()?['points'] ?? 0) as int;
+    final earned  = stopsCount * 10;
+
+    // update
+    await userRef.update({'points': current + earned});
+
+    // optional feedback
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("You earned $earned points! Total: ${current + earned}")),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -479,13 +498,26 @@ class _RouteScreenState extends State<RouteScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        // Dynamic title based on state
-        title: Text(_hasStartedNavigation
-            ? (_assignedBusCode != null ? 'Driving: $_assignedBusCode' : 'Navigation Started')
-            : 'Route: $_driverRouteType'
+        backgroundColor: Colors.purple[100],
+        elevation: 0,
+        toolbarHeight: 80,
+        centerTitle: true,
+        iconTheme: IconThemeData(color: Colors.black),
+        titleTextStyle: TextStyle(
+          color: Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
         ),
-        backgroundColor: Colors.purple,
+        title: Text(
+            _hasStartedNavigation
+                ? (_assignedBusCode != null
+                ? 'Driving: $_assignedBusCode'
+                : 'Navigation Started'
+            )
+                : 'Route: $_driverRouteType'
+        ),
       ),
+
       body: Stack(
         children: [
           GoogleMap(

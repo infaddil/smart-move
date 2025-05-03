@@ -33,16 +33,46 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _nearestStopName;
   double? _distanceToNearestStop;
   StreamSubscription? _busActivitySubscription;
+  String? _routeBusCode; // e.g., "A2"
+  String? _routeStartStopName; // e.g., "HBP"
+  String? _routeEndStopName; // e.g., "DK A"
+  List<LatLng>? _routeFullPolylinePoints; // Full path for the bus
+  List<LatLng>? _routeSegmentPolylinePoints; // Path segment (e.g., HBP to DK A)
+  LatLng? _routeBusPosition; // Live position of the bus
+  Color? _routeColor;
+  BitmapDescriptor? _routeBusIcon;
+  Set<Marker> _mapMarkers = {}; // Markers for this map
+  Set<Polyline> _mapPolylines = {}; // Polylines for this map
+  Timer? _busPositionUpdateTimer; // To refresh the bus position
+  Map<String, Color> _busColors = {}; // To store bus colors
+  Map<String, BitmapDescriptor> _busIcons = {}; // To store bus icons
+  Map<String, List<LatLng>> _busPaths = {}; // To store full bus paths
+  Map<String, LatLng> _liveBusPositions = {}; // Temp store for live positions
+  StreamSubscription? _liveBusPositionSubscription;
+  Map<String, List<String>> _routes = {};
 
   @override
   void initState() {
-    super.initState();
-    _initLocation();
-    _loadStopLocations();
-    _loadBusTrackerData();
-    _currentPosition = LatLng (5.354792742851638, 100.30181627359067);
-    // _initLocation(); (real later)
-    _currentUser = FirebaseAuth.instance.currentUser;
+      super.initState();
+      _initLocation();
+      _loadStopLocations().then((_) { // Ensure stops are loaded first
+        _loadRouteDefinitions(); // Then load routes
+      });
+      // _loadBusTrackerData(); // Maybe rename or refactor this
+      _loadStopLocations().then((_) {
+        if (!mounted) return;
+        _findNearestStop();
+        _startBusActivityListener();
+        // Call _loadRouteDefinitions *after* stops are loaded if needed elsewhere first
+        // Or call independently if order doesn't strictly matter for other init steps
+        _loadRouteDefinitions();
+      }).catchError((error) {
+        debugPrint("Error during initState data loading: $error");
+      });
+      _loadSharedBusData(); // <- NEW: Load colors, icons, maybe paths
+      _startLiveBusPositionListener(); // <- NEW: Listen to live bus positions
+      _currentPosition = LatLng (5.354792742851638, 100.30181627359067);
+      _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) _fetchUserRole();
 
     FirebaseAuth.instance.authStateChanges().listen((user) {
@@ -67,7 +97,93 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Inside class _HomeScreenState
+  Future<void> _loadSharedBusData() async {
+    // Copy color definitions from BusTrackerScreen
+    _busColors = {
+      'A1': Colors.purple, 'A2': Colors.deepOrangeAccent,
+      'B1': Colors.green, 'B2': Colors.limeAccent,
+      'C1': Colors.pink, 'C2': Colors.blue,
+    };
+
+    // Copy icon loading logic from BusTrackerScreen
+    _busColors.keys.forEach((code) {
+      BitmapDescriptor.fromAssetImage(
+        ImageConfiguration(size: Size(48, 48)), // Adjust size if needed
+        'assets/bus_$code.png', // Ensure these assets exist!
+      ).then((d) {
+        if (mounted) setState(() => _busIcons[code] = d);
+      }).catchError((e) {
+        debugPrint('❌ Failed to load assets/bus_$code.png in HomeScreen → $e');
+        if (mounted) {
+          setState(() => _busIcons[code] = BitmapDescriptor.defaultMarkerWithHue(
+              HSVColor.fromColor(_busColors[code] ?? Colors.grey).hue));
+        }
+      });
+    });
+
+    // --- Fetch Full Route Paths (example - adapt based on your structure) ---
+    // This assumes you have route definitions and can generate smooth paths
+    // This logic likely needs to be shared or replicated from BusTracker
+    // For simplicity, let's assume _fetchLiveBusContext or another function can provide this
+    // or you query 'route' collection + _stopLocations + _generateSmoothPath here.
+    // Example placeholder:
+    // await _generateAllBusPaths(); // You'd need to implement or call this
+  }
+
+  void _startLiveBusPositionListener() {
+    _liveBusPositionSubscription?.cancel(); // Cancel previous listener
+    _liveBusPositionSubscription = FirebaseFirestore.instance
+        .collection('busActivity')
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      Map<String, LatLng> updatedPositions = {};
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final busCode = data['busCode'] as String?;
+        final geoPoint = data['currentPosition'] as GeoPoint?;
+        if (busCode != null && geoPoint != null) {
+          updatedPositions[busCode] = LatLng(geoPoint.latitude, geoPoint.longitude);
+        }
+      }
+      // Store all live positions temporarily
+      _liveBusPositions = updatedPositions;
+
+      // If a route is currently displayed, update its bus position
+      if (_routeBusCode != null && _liveBusPositions.containsKey(_routeBusCode)) {
+        setState(() {
+          _routeBusPosition = _liveBusPositions[_routeBusCode!];
+          _updateMapMarkersAndPolylines(); // Update the map elements
+        });
+      }
+
+    }, onError: (error) {
+      debugPrint("Error listening to live bus positions: $error");
+    });
+  }
+// Add this function inside _HomeScreenState
+  Future<void> _loadRouteDefinitions() async {
+    try {
+      final routeSnap = await FirebaseFirestore.instance.collection('route').get();
+      Map<String, List<String>> tempRoutes = {};
+      for (var doc in routeSnap.docs) {
+        final stopsData = doc.data()['stops'];
+        if (stopsData is List) {
+          tempRoutes[doc.id] = List<String>.from(stopsData.map((item) => item.toString()));
+        } else {
+          debugPrint("⚠️ Route data for ${doc.id} is missing or not a list.");
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _routes = tempRoutes;
+        });
+      }
+      debugPrint("Loaded route definitions: ${_routes.keys.join(', ')}");
+    } catch (e) {
+      debugPrint("Error loading route definitions: $e");
+    }
+  }
 
   void _findNearestStop() {
     if (_stopLocations.isEmpty) {
@@ -441,6 +557,10 @@ RESPONSE REQUIREMENTS:
 7.  **If NO suitable bus is found:** State that there are currently no buses departing soon from `NearestUserStop` towards '$query'. You can suggest checking the Bus Tracker for later times or other routes.
 8.  **ETA Interpretation:** ETA=0 means arriving now. Negative ETA means 'has passed' that stop for this segment. -99 means data missing. Use this interpretation accurately.
 9.  Keep the response concise, actionable, and focused on the departure from `NearestUserStop`.
+10. If there is a recommended bus, at the end of your answer output only this JSON object like this
+{ "busCode":"A2","startStop":"HBP","endStop":"DK A","eta":2 }
+11. If no buses are departing soon, output null
+
 
 NOW, provide the recommendation based on the data and requirements:
 """;
@@ -531,11 +651,245 @@ NOW, provide the recommendation based on the data and requirements:
 
   @override
   void dispose() {
-    _mapController?.dispose(); // Dispose map controller if you have one
-    _busActivitySubscription?.cancel(); // Cancel the listener!
-    debugPrint("HomeScreen disposed, listener cancelled.");
+    // _busPositionUpdateTimer?.cancel(); // Cancel timer if used
+    _liveBusPositionSubscription?.cancel(); // Cancel listener
+    _mapController?.dispose();
     super.dispose();
   }
+  List<LatLng>? _calculateSegmentPath(List<LatLng>? fullPath, LatLng? start, LatLng? end) {
+    if (fullPath == null || fullPath.isEmpty || start == null || end == null) {
+      return null;
+    }
+
+    int startIndex = _findNearestPathIndex(fullPath, start);
+    int endIndex   = _findNearestPathIndex(fullPath, end);
+    if (startIndex == -1 || endIndex == -1) return null;
+
+    if (startIndex <= endIndex) {
+      // simple case: straight slice
+      return fullPath.sublist(startIndex, endIndex + 1);
+    } else {
+      // loop-around case: take from startIndex→end, then 0→endIndex
+      final segment1 = fullPath.sublist(startIndex);
+      final segment2 = fullPath.sublist(0, endIndex + 1);
+      return [
+        ...segment1,
+        ...segment2,
+      ];
+    }
+  }
+
+  int _findNearestPathIndex(List<LatLng> path, LatLng point) {
+    double minDistance = double.infinity;
+    int nearestIndex = -1;
+    for (int i = 0; i < path.length; i++) {
+      double distance = Geolocator.distanceBetween(
+          point.latitude, point.longitude,
+          path[i].latitude, path[i].longitude
+      );
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestIndex = i;
+      }
+    }
+    // Optional: Add a threshold check - if minDistance is too large, maybe the stop isn't truly on the path
+    if (minDistance > 500) { // Example threshold: 500 meters
+      debugPrint("Stop (${point.latitude}, ${point.longitude}) is > 500m from the nearest path point. Index: $nearestIndex");
+      // return -1; // Uncomment if you want to invalidate if too far
+    }
+    return nearestIndex;
+  }
+
+  // --- NEW: Helper to get the smooth path (needs implementation) ---
+  // This MUST replicate or access the logic from BusTrackerScreen._generateSmoothPath
+  // and know the full stop list for the given bus code.
+  // --- IMPLEMENTATION for _getSmoothPathForBus ---
+  List<LatLng>? _getSmoothPathForBus(String busCode) {
+    if (busCode.isEmpty || _routes.isEmpty || _stopLocations.isEmpty) {
+      debugPrint("⚠️ Cannot get smooth path: Missing busCode ('$busCode'), routes (${_routes.length}), or stopLocations (${_stopLocations.length}).");
+      return null;
+    }
+    // Get the route letter (e.g., 'A' from 'A2')
+    final routeLetter = busCode[0];
+    // Get the list of stop names for this route letter
+    final stopNames = _routes[routeLetter];
+
+    if (stopNames == null || stopNames.isEmpty) {
+      debugPrint("⚠️ No designated stops found for route letter '$routeLetter'. Cannot generate path for $busCode.");
+      return null;
+    }
+
+    // Get LatLng for each stop name, filtering out any missing ones
+    final stopCoords = stopNames
+        .map((name) {
+      final loc = _stopLocations[name];
+      // if (loc == null) debugPrint("   - Missing location for stop: $name"); // Optional debug
+      return loc;
+    })
+        .whereType<LatLng>() // Filters out nulls if a stop location is missing
+        .toList();
+
+    if (stopCoords.length != stopNames.length) {
+      debugPrint("⚠️ Mismatch between stop names (${stopNames.length}) and found locations (${stopCoords.length}) for route '$routeLetter'. Some stops might be missing coordinates.");
+    }
+
+    if (stopCoords.length < 2) {
+      debugPrint("⚠️ Need at least 2 valid stop locations to generate a path for route '$routeLetter'. Found ${stopCoords.length}. Cannot generate path for $busCode.");
+      return null; // Cannot create a path with fewer than 2 points
+    }
+
+    // Generate the smooth path using the helper function
+    List<LatLng> smoothPath = _generateSmoothPath(stopCoords);
+    debugPrint("Generated smooth path for $busCode ($routeLetter) with ${smoothPath.length} points from ${stopCoords.length} stops.");
+    return smoothPath;
+  }
+  List<LatLng> _getPointsBetween(LatLng start, LatLng end, int segments) {
+    final points = <LatLng>[];
+    for (int i = 0; i <= segments; i++) {
+      final ratio = i / segments;
+      points.add(LatLng(
+        start.latitude + (end.latitude - start.latitude) * ratio,
+        start.longitude + (end.longitude - start.longitude) * ratio,
+      ));
+    }
+    return points;
+  }
+  List<LatLng> _generateSmoothPath(List<LatLng> stops, {int segments = 10}) {
+    if (stops.length < 2) return stops;
+    final path = <LatLng>[];
+    for (int i = 0; i < stops.length - 1; i++) {
+      final segmentPoints = _getPointsBetween(stops[i], stops[i + 1], segments);
+      // Add all points from the segment except the last one,
+      // unless it's the very last segment of the whole path.
+      path.addAll(segmentPoints.sublist(0, segments));
+    }
+    // Add the final destination stop explicitly.
+    path.add(stops.last);
+    return path;
+  }
+
+  // --- NEW: Method to update map markers and polylines ---
+  void _updateMapMarkersAndPolylines() {
+    Set<Marker> markers = {};
+    Set<Polyline> polylines = {};
+
+    if (_routeBusCode != null && _routeSegmentPolylinePoints != null && _routeColor != null) {
+      // Add Polyline for the segment
+      polylines.add(Polyline(
+        polylineId: PolylineId('route_segment_$_routeBusCode'),
+        points: _routeSegmentPolylinePoints!,
+        color: _routeColor!.withOpacity(0.8),
+        width: 5,
+      ));
+
+      // Add Start Marker
+      if (_routeStartStopName != null && _stopLocations.containsKey(_routeStartStopName!)) {
+        markers.add(Marker(
+          markerId: MarkerId('start_stop_$_routeStartStopName'),
+          position: _stopLocations[_routeStartStopName!]!,
+          infoWindow: InfoWindow(title: _routeStartStopName!, snippet: "Board Here"),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        ));
+      }
+
+      // Add End Marker
+      if (_routeEndStopName != null && _stopLocations.containsKey(_routeEndStopName!)) {
+        markers.add(Marker(
+          markerId: MarkerId('end_stop_$_routeEndStopName'),
+          position: _stopLocations[_routeEndStopName!]!,
+          infoWindow: InfoWindow(title: _routeEndStopName!, snippet: "Destination"),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        ));
+      }
+
+
+      // Add Moving Bus Marker (if position and icon are available)
+      if (_routeBusPosition != null && _routeBusIcon != null) {
+        // Calculate rotation (needs path segment)
+        double rotation = 0;
+        if (_routeSegmentPolylinePoints != null && _routeSegmentPolylinePoints!.length >= 2) {
+          // Find current segment on the path based on bus position (simplified)
+          int busIndex = _findNearestPathIndex(_routeSegmentPolylinePoints!, _routeBusPosition!);
+          if (busIndex != -1 && busIndex < _routeSegmentPolylinePoints!.length - 1) {
+            LatLng start = _routeSegmentPolylinePoints![busIndex];
+            LatLng end = _routeSegmentPolylinePoints![busIndex + 1];
+            rotation = Geolocator.bearingBetween(start.latitude, start.longitude, end.latitude, end.longitude);
+          }
+        }
+
+        markers.add(Marker(
+            markerId: MarkerId('bus_marker_$_routeBusCode'),
+            position: _routeBusPosition!,
+            icon: _routeBusIcon!,
+            rotation: rotation,
+            flat: true,
+            anchor: Offset(0.5, 0.5), // Center anchor for rotation
+            zIndex: 2 // Ensure bus is drawn on top
+        ));
+      }
+    }
+
+    // Update the state
+    // Note: Check mounting if this is called from async callbacks outside setState scope
+    if(mounted){
+      setState(() {
+        _mapMarkers = markers;
+        _mapPolylines = polylines;
+      });
+    } else {
+      _mapMarkers = markers; // Update directly if not mounted (use with caution)
+      _mapPolylines = polylines;
+    }
+
+  }
+
+  // --- NEW: Method to clear the route display ---
+  void _clearRouteDisplay() {
+    // _busPositionUpdateTimer?.cancel(); // Cancel timer if used
+    // _busPositionUpdateTimer = null;
+    setState(() {
+      _routeBusCode = null;
+      _routeStartStopName = null;
+      _routeEndStopName = null;
+      _routeFullPolylinePoints = null;
+      _routeSegmentPolylinePoints = null;
+      _routeBusPosition = null;
+      _routeColor = null;
+      _routeBusIcon = null;
+      _mapMarkers.clear();
+      _mapPolylines.clear();
+    });
+  }
+
+  // --- NEW: Method to zoom map ---
+  void _zoomToRoute() {
+    if (_routeSegmentPolylinePoints == null || _routeSegmentPolylinePoints!.isEmpty || _mapController == null) {
+      return;
+    }
+    LatLngBounds bounds;
+    if (_routeSegmentPolylinePoints!.length == 1) {
+      // Handle single point case - maybe zoom to a fixed level?
+      bounds = LatLngBounds(
+          southwest: _routeSegmentPolylinePoints!.first,
+          northeast: _routeSegmentPolylinePoints!.first);
+    } else {
+      bounds = LatLngBounds(
+        southwest: _routeSegmentPolylinePoints!.reduce((value, element) => LatLng(
+          min(value.latitude, element.latitude),
+          min(value.longitude, element.longitude),
+        )),
+        northeast: _routeSegmentPolylinePoints!.reduce((value, element) => LatLng(
+          max(value.latitude, element.latitude),
+          max(value.longitude, element.longitude),
+        )),
+      );
+    }
+
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 50.0), // Add padding
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -576,7 +930,10 @@ NOW, provide the recommendation based on the data and requirements:
                           if (!mounted) return;
                           setState(() {
                             _searchResultMessage = "🔄 Fetching live data & recommendation..."; // Updated loading message
+                            _clearRouteDisplay();
                           });
+
+                          // Assuming 'towards' indicates destination
 
                           final destinationInput = dest.trim();
                           final destinationLower = destinationInput.toLowerCase();
@@ -614,16 +971,101 @@ NOW, provide the recommendation based on the data and requirements:
                             // 4. Call Gemini API
                             final aiResponse = await _callGemma(prompt); // Use your existing _callGemma
                             debugPrint("--- Live Gemini Response ---\n$aiResponse");
+                            if (aiResponse.contains('No buses departing') ||
+                                aiResponse.contains('currently no buses') ||
+                                aiResponse.contains('no suitable bus')) {
+                              setState(() {
+                                _searchResultMessage = aiResponse;
+                                _clearRouteDisplay();
+                              });
+                              return;
+                            }
                             if (!mounted) return;
+                            bool noRouteFound = aiResponse.contains("No buses departing") ||
+                                aiResponse.contains("no suitable bus") || // Add other variations if needed
+                                aiResponse.contains("currently no buses");
 
-                            // 5. Display Result
-                            setState(() => _searchResultMessage = aiResponse);
+                            if (noRouteFound) {
+                              // Gemini explicitly said no route, so just display its message
+                              debugPrint("Gemini reported no suitable route found.");
+                              setState(() {
+                                _searchResultMessage = aiResponse; // Show Gemini's explanation
+                                _clearRouteDisplay(); // Ensure no old route is shown
+                              });
+                            } else {
+                              // 2. A route *might* have been suggested, attempt to parse
+                              debugPrint("Attempting to parse route details from Gemini response...");
+                              if (aiResponse.trim() == 'null') {
+                                // no buses departing
+                                setState(() {
+                                  _searchResultMessage = "🚫 No buses departing soon. Please check later.";
+                                  _clearRouteDisplay();
+                                });
+                                return;
+                              }
+// … after you’ve already done the “null” / no-bus short-circuit…
+
+// 1) Extract the JSON blob
+                              final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(aiResponse);
+                              if (jsonMatch == null) {
+                                setState(() {
+                                  _searchResultMessage = aiResponse + "\n\n(Could not parse recommendation.)";
+                                  _clearRouteDisplay();
+                                });
+                                return;
+                              }
+
+// 2) Decode it
+                              final jsonString = jsonMatch.group(0)!;
+                              final parsed = jsonDecode(jsonString) as Map<String, dynamic>;
+
+// 3) Pull out your fields directly
+                              final busCode   = parsed['busCode'] as String?;
+                              final startStop = parsed['startStop'] as String?;
+                              final endStop   = parsed['endStop'] as String?;
+                              final eta       = parsed['eta'] as int?;
+
+// 4) Validate & update state
+                              if (busCode == null || startStop == null || endStop == null || eta == null) {
+                                setState(() {
+                                  _searchResultMessage = aiResponse + "\n\n(Could not parse recommendation fields.)";
+                                  _clearRouteDisplay();
+                                });
+                              } else {
+                                setState(() {
+                                  _searchResultMessage        = aiResponse;
+                                  _routeBusCode               = busCode;
+                                  _routeStartStopName         = startStop;
+                                  _routeEndStopName           = endStop;
+                                  _routeColor                 = _busColors[busCode];
+                                  _routeBusIcon               = _busIcons[busCode];
+                                  _routeFullPolylinePoints    = _getSmoothPathForBus(busCode);
+                                  _routeSegmentPolylinePoints = _calculateSegmentPath(
+                                      _routeFullPolylinePoints,
+                                      _stopLocations[startStop],
+                                      _stopLocations[endStop]
+                                  );
+                                  _routeBusPosition           = _liveBusPositions[busCode];
+                                  _updateMapMarkersAndPolylines();
+                                  _zoomToRoute();
+                                });
+                              }
+
+                              String? parsedStartStop;
+                              String? parsedEndStop;
+
+                              // Keep your RegExp definitions
+
+                            } // End of the 'else' block (where parsing is attempted)
+
+                            // **** END OF CHANGES ****
 
                           } catch (e, stackTrace) {
                             if (!mounted) return;
                             debugPrint("Error getting live suggestion: $e\n$stackTrace");
                             setState(() {
                               _searchResultMessage = "⚠️ Error getting recommendation: ${e.toString().replaceFirst('Exception: ', '')}";
+                              _clearRouteDisplay();
                             });
                           }
                         }, // End of onSubmitted
@@ -659,10 +1101,16 @@ NOW, provide the recommendation based on the data and requirements:
                     borderRadius: BorderRadius.circular(5),
                     child: GoogleMap(
                       initialCameraPosition: CameraPosition(
-                        target: _currentPosition!,
+                        target: _currentPosition ?? const LatLng(5.354803870916983, 100.3023350270162), // Use fallback
                         zoom: 15,
                       ),
-                      onMapCreated: (c) => _mapController = c,
+                      onMapCreated: (c) {
+                        _mapController = c;
+                        // If a route was calculated before map loaded, zoom now
+                        if (_routeSegmentPolylinePoints != null) {
+                          Future.delayed(Duration(milliseconds: 500), _zoomToRoute);
+                        }
+                      },
                       onTap: (LatLng tappedPoint) {
                         Navigator.push(
                           context,
@@ -675,6 +1123,8 @@ NOW, provide the recommendation based on the data and requirements:
                       },
                       myLocationEnabled: true,
                       zoomControlsEnabled: false,
+                      markers: _mapMarkers,
+                      polylines: _mapPolylines,
                     ),
                   )
                       : Center(child: CircularProgressIndicator()),

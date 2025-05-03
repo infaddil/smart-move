@@ -2,18 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:smart_move/screens/live_crowd_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:smart_move/services/notification_service.dart';
-import 'package:smart_move/widgets/nav_bar.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smart_move/screens/bus_route_service.dart';
-import 'package:smart_move/screens/bus_tracker.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:geolocator/geolocator.dart';
 import 'dart:math';
-import 'package:smart_move/main.dart';
+import 'dart:async'; // Add this line
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -32,6 +28,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, String> _busAssignments   = {};
   Map<String, List<Map<String,dynamic>>> _busCurrentSegments = {};
   Map<String, List<Map<String,dynamic>>> _busNextSegments    = {};
+  final LatLng _predefinedUserLocation = const LatLng(5.354707732783205, 100.30236721352311);
+  String? _nearbyBusAlertMessage;
+  String? _nearestStopName;
+  double? _distanceToNearestStop;
+  StreamSubscription? _busActivitySubscription;
 
   @override
   void initState() {
@@ -54,6 +55,148 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     });
+    _loadStopLocations().then((_) {
+      if (!mounted) return; // Check if still mounted after loading
+      // 2. Find the nearest stop to the predefined location
+      _findNearestStop();
+      // 3. Start listening to live bus activity
+      _startBusActivityListener();
+    }).catchError((error) {
+      debugPrint("Error during initState data loading: $error");
+      // Handle error appropriately, maybe show a message
+    });
+  }
+
+  // Inside class _HomeScreenState
+
+  void _findNearestStop() {
+    if (_stopLocations.isEmpty) {
+      debugPrint("Cannot find nearest stop: _stopLocations is empty.");
+      return;
+    }
+
+    String? nearestName;
+    double minDistance = double.infinity;
+
+    _stopLocations.forEach((name, location) {
+      final distance = Geolocator.distanceBetween(
+        _predefinedUserLocation.latitude,
+        _predefinedUserLocation.longitude,
+        location.latitude,
+        location.longitude,
+      );
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestName = name;
+      }
+    });
+
+    if (nearestName != null) {
+      debugPrint("Nearest stop to predefined location is: $nearestName (${minDistance.toStringAsFixed(0)}m away)");
+      if (mounted) { // Update state if mounted
+        setState(() {
+          _nearestStopName = nearestName;
+          _distanceToNearestStop = minDistance;
+        });
+      } else { // Otherwise, just set the internal variable
+        _nearestStopName = nearestName;
+        _distanceToNearestStop = minDistance;
+      }
+    } else {
+      debugPrint("Could not determine nearest stop.");
+      if (mounted) setState(() => _nearestStopName = null);
+      else _nearestStopName = null;
+    }
+  }
+  // Inside class _HomeScreenState
+
+  void _startBusActivityListener() {
+    if (_nearestStopName == null) {
+      debugPrint("Cannot start listener: Nearest stop not determined yet.");
+      // Optionally retry finding nearest stop or wait
+      return;
+    }
+
+    // Cancel any previous listener
+    _busActivitySubscription?.cancel();
+    debugPrint("Starting Firestore listener for busActivity...");
+
+    _busActivitySubscription = FirebaseFirestore.instance
+        .collection('busActivity')
+        .snapshots()
+        .listen(
+        _processBusActivitySnapshot, // Call the processing function
+        onError: (error) {
+          debugPrint("Firestore Listener Error: $error");
+          // Handle error, maybe try restarting the listener after a delay
+          _busActivitySubscription?.cancel();
+          _busActivitySubscription = null;
+          // Consider adding retry logic here if needed
+          if(mounted) {
+            setState(() {
+              _nearbyBusAlertMessage = "⚠️ Error fetching live bus data.";
+            });
+          }
+        },
+        onDone: () {
+          debugPrint("Firestore listener stream closed.");
+          _busActivitySubscription = null;
+        }
+    );
+  }
+
+  void _processBusActivitySnapshot(QuerySnapshot snapshot) {
+    if (!mounted || _nearestStopName == null) {
+      debugPrint("Skipping snapshot processing: Not mounted or nearest stop unknown.");
+      return; // Exit if not mounted or nearest stop isn't set
+    }
+
+    String? foundMessage; // Temporary variable to hold a potential message
+
+    // Iterate through each active bus document
+    for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+
+      final busCode = data['busCode'] as String?;
+      final stopsListRaw = data['stops'] as List?; // List of Maps: {name, eta, crowd, location}
+
+      if (busCode == null || stopsListRaw == null) continue;
+
+      // Check the stops for *this specific bus*
+      for (var item in stopsListRaw) {
+        if (item is Map<String, dynamic>) {
+          final stopName = item['name'] as String?;
+          final etaRaw = item['eta'];
+
+          // Check if this stop is the nearest one we care about
+          if (stopName != null && stopName == _nearestStopName) {
+            final int? eta = (etaRaw is num) ? etaRaw.toInt() : null;
+
+            // Check if ETA is valid and less than 3 minutes
+            if (eta != null && eta >= 0 && eta < 3) {
+              // Found a bus arriving soon at the nearest stop!
+              foundMessage = "🚍 Bus $busCode arriving at $_nearestStopName in $eta minute${eta == 1 ? '' : 's'}!";
+              debugPrint("Found nearby alert: $foundMessage");
+              break; // Stop checking other stops for *this* bus
+            }
+          }
+        }
+      } // End loop through stops for one bus
+
+      if (foundMessage != null) {
+        break; // Stop checking other buses once we found one meeting the criteria
+      }
+    } // End loop through all bus documents
+
+    // Update the state *once* after checking all buses
+    // Use the temporary 'foundMessage'. If it's null, no bus met the criteria.
+    if (mounted && _nearbyBusAlertMessage != foundMessage) { // Only update state if message changed
+      setState(() {
+        _nearbyBusAlertMessage = foundMessage;
+      });
+    }
   }
 
   Future<void> _fetchUserRole() async {
@@ -184,10 +327,13 @@ class _HomeScreenState extends State<HomeScreen> {
     };
   }
   // Inside _HomeScreenState class in lib/screens/home_screen.dart
+// Inside _HomeScreenState class in lib/screens/home_screen.dart
 
-  /// Builds a prompt for Gemini using LIVE bus context.
+  // Inside _HomeScreenState class in lib/screens/home_screen.dart
+
+  /// Builds a prompt for Gemini using LIVE bus context, focusing on departure from the nearest stop.
   String _buildLivePrompt(
-      String query,
+      String query, // The user's ultimate destination
       Map<String, dynamic> liveContext, // Data from _fetchLiveBusContext
       LatLng currentUserLocation,
       ) {
@@ -198,6 +344,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 
     // --- Format Live Bus Info ---
+    // (Keep the same formatting as before - provides necessary data for the AI)
     String liveBusInfo = "ACTIVE BUSES (LIVE DATA):\n";
     if (liveAssignments.isEmpty) {
       liveBusInfo += "  No active buses found.\n";
@@ -208,53 +355,56 @@ class _HomeScreenState extends State<HomeScreen> {
         if (stopsDataForBus.isEmpty) {
           liveBusInfo += "  - No current stop data available.\n";
         } else {
-          // Find the next stop (first in the list with non-negative ETA, or just first)
           Map<String, dynamic>? nextStopData = stopsDataForBus.firstWhere(
                   (s) => (s['eta'] as int? ?? -1) >= 0,
               orElse: () => stopsDataForBus.isNotEmpty ? stopsDataForBus.first : <String,dynamic>{}
           );
-          liveBusInfo += "  - Next Stop: ${nextStopData['name'] ?? 'N/A'} (ETA: ${nextStopData['eta'] ?? '?'}m, Crowd: ${nextStopData['crowd'] ?? '?'})\n";
-          liveBusInfo += "  - Following Stops (Live ETA/Crowd):\n";
+          liveBusInfo += "  - Current Next Stop: ${nextStopData['name'] ?? 'N/A'} (ETA: ${nextStopData['eta'] ?? '?'}m, Crowd: ${nextStopData['crowd'] ?? '?'})\n";
+          liveBusInfo += "  - Full Segment Stops (Live ETA/Crowd):\n"; // Clarified title
           stopsDataForBus.forEach((stopData) {
-            // Use ?? '?' for safety, though _fetchLiveBusContext should handle parsing
             liveBusInfo += "    - 🚏 ${stopData['name'] ?? 'Unknown'}: ETA: ${stopData['eta'] ?? '?'} min, Crowd: ${stopData['crowd'] ?? '?'} ppl\n";
           });
         }
-        liveBusInfo += "\n"; // Add spacing between buses
+        liveBusInfo += "\n";
       });
     }
 
-    // --- Find Nearest Stop to User (using stopLocations from context) ---
-    String nearestStopInfo = "NEAREST STOP TO YOUR LOCATION:\n";
-    if (stopLocations.isNotEmpty && currentUserLocation != null) {
-      String? nearestStopName;
+    // --- Find Nearest Stop to User ---
+    // (Keep the same formatting as before - provides the key starting point)
+    String nearestStopInfo = "NEAREST STOP TO USER'S PREDEFINED LOCATION:\n";
+    String? nearestStopNameForPrompt; // Variable to store the name for prompt instructions
+    if (stopLocations.isNotEmpty && currentUserLocation != null) { // Use predefined location for calculation if needed, but prompt context uses actual maybe? Let's stick to currentUserLocation passed in for the prompt context for now.
       double minDistance = double.infinity;
+
+      // **Important:** Use the PREDEFINED location to find the nearest stop name
+      // final LatLng locationToUse = _predefinedUserLocation; // Use the fixed location
+      // However, the context for the prompt should probably use the actual user location if available, or the predefined one if not. Let's assume currentUserLocation IS the one we want the AI to use for context.
+      final LatLng locationToUse = currentUserLocation; // Location for distance calc in prompt context
 
       stopLocations.forEach((name, loc) {
         final distance = Geolocator.distanceBetween(
-          currentUserLocation.latitude, currentUserLocation.longitude,
+          locationToUse.latitude, locationToUse.longitude, // Use the location passed to the function
           loc.latitude, loc.longitude,
         );
         if (distance < minDistance) {
           minDistance = distance;
-          nearestStopName = name;
+          nearestStopNameForPrompt = name; // Store the name
         }
       });
 
-      if (nearestStopName != null) {
-        // Try to find live data for the nearest stop
+      if (nearestStopNameForPrompt != null) {
         String liveDetails = "";
         liveAssignments.forEach((busId, busCode) {
           final segment = liveSegments[busId] ?? [];
           final stopData = segment.firstWhere(
-                  (s) => s['name'] == nearestStopName,
+                  (s) => s['name'] == nearestStopNameForPrompt,
               orElse: () => <String,dynamic>{}
           );
           if (stopData.isNotEmpty) {
-            liveDetails += " (Bus $busCode: ETA ${stopData['eta'] ?? '?'}m, Crowd ${stopData['crowd'] ?? '?'})";
+            liveDetails += " (Bus $busCode ETA here: ${stopData['eta'] ?? '?'}m)"; // Clarify ETA is *at* this stop
           }
         });
-        nearestStopInfo += "  - $nearestStopName (${minDistance.toStringAsFixed(0)}m away)$liveDetails\n";
+        nearestStopInfo += "  - $nearestStopNameForPrompt (${minDistance.toStringAsFixed(0)}m away)$liveDetails\n";
       } else {
         nearestStopInfo += "  - Could not determine nearest stop.\n";
       }
@@ -262,33 +412,37 @@ class _HomeScreenState extends State<HomeScreen> {
       nearestStopInfo += "  - Cannot determine nearest stop (missing location data).\n";
     }
 
-
     // --- Construct the final prompt ---
+    // ***** START OF UPDATED PROMPT TEXT *****
     return """
 You are SmartMove, an expert public transportation assistant for USM, Penang.
-Provide concise, actionable advice for the user's destination query based *primarily* on the following LIVE, real-time bus data.
+Your primary goal is to help the user get from their current vicinity towards their destination ('$query') by recommending the best bus to take from their NEAREST bus stop.
 
 USER'S CURRENT LOCATION (Approx): ${currentUserLocation?.latitude.toStringAsFixed(5)}, ${currentUserLocation?.longitude.toStringAsFixed(5)}
+USER'S DESTINATION: $query
 
-LIVE BUS DATA:
-$liveBusInfo
+CONTEXT DATA:
 $nearestStopInfo
+$liveBusInfo
 
-USER'S DESTINATION QUERY: $query
+TASK: Recommend the best bus route departing from the user's NEAREST stop towards their destination.
 
 RESPONSE REQUIREMENTS:
-1.  Identify the best bus(es) and stop(s) to reach the user's destination "$query".
-2.  **Prioritize using the LIVE ETA and CROWD numbers provided in the 'LIVE BUS DATA' section above.** Do not make up numbers.
-3.  **ETA Interpretation:** An ETA of 0 means the bus is arriving now. A negative ETA means the bus has likely already passed that stop for this trip segment. -99 means ETA data was missing.
-4.  **Crowd Interpretation:** -1 means crowd data was missing.
-5.  Mention the specific bus code (e.g., A1, B2).
-6.  Recommend the *specific stop* the user should wait at. Consider the nearest stop to the user if appropriate.
-7.  Give clear instructions (e.g., "Take Bus A1 from DK A...").
-8.  If the destination stop has a negative ETA for the best bus option, inform the user the bus have passed and suggest checking the tracker or waiting for the next cycle/bus.
-9.  If multiple buses serve the destination, briefly compare their live ETAs/crowds if available.
-10. Keep the response helpful short, precise
+1.  First, identify the user's nearest stop mentioned in '$nearestStopInfo'. Let's call this `NearestUserStop`.
+2.  Look through the 'LIVE BUS DATA'. Find buses whose 'Full Segment Stops' list includes `NearestUserStop`.
+3.  Filter these buses: Only consider buses where the live ETA *at `NearestUserStop`* is **positive (>= 0)**. Ignore buses with negative ETA at `NearestUserStop` as they have already passed it for this segment.
+4.  For the filtered buses (arriving soon at `NearestUserStop`), determine if their route segment continues **towards** the user's destination '$query'. (The destination might be later in the segment list or the bus route generally heads that way).
+5.  **If a suitable bus is found:**
+    a.  Recommend the user go to `NearestUserStop`.
+    b.  Clearly state which bus (e.g., "Take Bus A1...") to catch from `NearestUserStop`.
+    c.  Provide the **Live ETA for that bus *at `NearestUserStop`*** (e.g., "...arriving in 2 minutes."). Use ETA=0 to mean 'arriving now'.
+    d.  Confirm this bus heads towards their destination '$query'.
+6.  **If multiple suitable buses:** Suggest the one arriving earliest at `NearestUserStop`, and briefly mention the other option if its ETA is also soon.
+7.  **If NO suitable bus is found:** State that there are currently no buses departing soon from `NearestUserStop` towards '$query'. You can suggest checking the Bus Tracker for later times or other routes.
+8.  **ETA Interpretation:** ETA=0 means arriving now. Negative ETA means 'has passed' that stop for this segment. -99 means data missing. Use this interpretation accurately.
+9.  Keep the response concise, actionable, and focused on the departure from `NearestUserStop`.
 
-NOW, based on the LIVE DATA, answer the user's query for destination "$query":
+NOW, provide the recommendation based on the data and requirements:
 """;
   }
 
@@ -351,50 +505,6 @@ NOW, based on the LIVE DATA, answer the user's query for destination "$query":
     });
   }
 
-  String _buildAIPrompt(
-      String dest,
-      String busType,
-      List<Map<String, dynamic>> current,
-      List<Map<String, dynamic>> next,
-      Map<String, LatLng> allLoc,
-      LatLng myPos,
-      ) {
-    final allStops = [...current, ...next];
-    if (allStops.isEmpty) {
-      throw Exception('No stop data available for your route');
-    }
-    var nearest = allStops.first;
-    var bestDist = double.infinity;
-    for (var s in allStops) {
-      final loc = allLoc[s['name']]!;
-      final d = Geolocator.distanceBetween(
-        myPos.latitude, myPos.longitude,
-        loc.latitude, loc.longitude,
-      );
-      if (d < bestDist) {
-        bestDist = d;
-        nearest = s;
-      }
-    }
-
-    final sb = StringBuffer()
-      ..writeln('You are an expert Malaysian transit assistant.')
-      ..writeln('\nDESTINATION: $dest')
-      ..writeln('\nBUS TYPE: $busType')
-      ..writeln('\nCURRENT STOPS:')
-      ..writeln(current.map((s) =>
-      '• ${s['name']} – ${s['crowd']} ppl, ETA ${s['eta']}m'
-      ).join('\n'))
-      ..writeln('\nNEXT STOPS:')
-      ..writeln(next.map((s) =>
-      '• ${s['name']} – ${s['crowd']} ppl, ETA ${s['eta']}m'
-      ).join('\n'))
-      ..writeln('\nNEAREST STOP: ${nearest['name']} '
-          '(${nearest['crowd']} ppl, ETA ${nearest['eta']}m)')
-      ..writeln('\nINSTRUCTION: Recommend the best stop & ETA on bus $busType for $dest.');
-    return sb.toString();
-  }
-
   Future<void> _initLocation() async {
     var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -416,6 +526,15 @@ NOW, based on the LIVE DATA, answer the user's query for destination "$query":
     setState(() {
       _selectedIndex = index;
     });
+  }
+  // Inside class _HomeScreenState
+
+  @override
+  void dispose() {
+    _mapController?.dispose(); // Dispose map controller if you have one
+    _busActivitySubscription?.cancel(); // Cancel the listener!
+    debugPrint("HomeScreen disposed, listener cancelled.");
+    super.dispose();
   }
 
   @override
@@ -463,11 +582,6 @@ NOW, based on the LIVE DATA, answer the user's query for destination "$query":
                                   borderSide: BorderSide.none,
                                 ),
                               ),
-
-                              // Inside lib/screens/home_screen.dart
-// Inside class _HomeScreenState extends State<HomeScreen> { ... }
-// Inside the build method's TextField:
-
                               onSubmitted: (dest) async {
                                 if (!mounted) return;
                                 setState(() {
@@ -491,26 +605,15 @@ NOW, based on the LIVE DATA, answer the user's query for destination "$query":
                                   // 2. Fetch FRESH Live Bus Context right now
                                   final liveContext = await _fetchLiveBusContext();
                                   if (!mounted) return;
-
-                                  // Check if context fetching failed
                                   if ((liveContext['assignments'] as Map? ?? {}).isEmpty && (liveContext['segments'] as Map? ?? {}).isEmpty) {
                                     // This might happen if _fetchLiveBusContext caught an error and returned empty maps
                                     throw Exception("Failed to fetch live bus activity data.");
                                   }
 
-                                  // --- Optional: Basic Check if Destination Exists as a Stop Name ---
-                                  // This provides a quick fallback if the AI struggles later
                                   final allKnownStopNames = (liveContext['stopLocations'] as Map<String, LatLng>? ?? {}).keys.map((k) => k.toLowerCase()).toSet();
                                   if (!allKnownStopNames.contains(destinationLower)) {
-                                    // If the destination isn't even a known stop, inform the user directly maybe?
-                                    // Or let the AI handle it based on the prompt instructions.
-                                    // For now, we let the AI try.
-                                    debugPrint("Destination '$destinationInput' not found in known stop names. Letting AI determine route.");
+                                   debugPrint("Destination '$destinationInput' not found in known stop names. Letting AI determine route.");
                                   }
-                                  // --- End Optional Check ---
-
-
-                                  // 3. Build the LIVE Prompt
                                   final prompt = _buildLivePrompt(
                                     destinationInput, // User's query
                                     liveContext,      // The fetched live data
@@ -556,6 +659,33 @@ NOW, based on the LIVE DATA, answer the user's query for destination "$query":
                           ],
                         ),
                       ),
+                      if (_nearbyBusAlertMessage != null && _nearbyBusAlertMessage!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12.0, bottom: 4.0), // Adjust padding as needed
+                          child: Card(
+                            color: Colors.lightGreen[100], // Use a distinct color
+                            elevation: 2,
+                            child: Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: Row( // Use Row for Icon and Text
+                                children: [
+                                  Icon(Icons.warning_amber_rounded, color: Colors.orange[800], size: 20,),
+                                  SizedBox(width: 8),
+                                  Expanded( // Allow text to wrap
+                                    child: Text(
+                                      _nearbyBusAlertMessage!,
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.green[800],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
 
                       SizedBox(height: 12),
 

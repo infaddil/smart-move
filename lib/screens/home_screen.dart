@@ -9,7 +9,9 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'dart:math';
-import 'dart:async'; // Add this line
+import 'dart:async';
+import 'package:smart_move/screens/route_screen.dart';
+import 'package:smart_move/screens/redeem_reward_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -49,6 +51,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, LatLng> _liveBusPositions = {}; // Temp store for live positions
   StreamSubscription? _liveBusPositionSubscription;
   Map<String, List<String>> _routes = {};
+  int    _userPoints = 0;
+  StreamSubscription? _authSubscription;
+  StreamSubscription? _pointsSubscription;
+
   final List<String> _destinations = [
     'Aman Damai',
     'Informm',
@@ -90,13 +96,36 @@ class _HomeScreenState extends State<HomeScreen> {
     FirebaseAuth.instance.authStateChanges().listen((user) {
       setState(() {
         _currentUser = user;
-        if (user != null) {
+        if (_currentUser != null) {
           _fetchUserRole();
-        } else {
-          _userRole = null;
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(_currentUser!.uid)
+              .snapshots()
+              .listen((doc) {
+            final pts = doc.data()?['points'] ?? 0;
+            setState(() => _userPoints = pts as int);
+          });
         }
       });
     });
+      _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
+        // Cancel previous points listener if user changes or logs out
+        _pointsSubscription?.cancel();
+        _pointsSubscription = null;
+
+        setState(() {
+          _currentUser = user; // Update the current user state
+          if (user != null) {
+            _fetchUserRoleAndPoints(user); // Fetch role and points for new user
+          } else {
+            // --- Explicitly set role and points to null/zero on logout ---
+            _userRole = null;
+            _userPoints = 0;
+            // --- End explicit reset ---
+          }
+        });
+      });
     _loadStopLocations().then((_) {
       if (!mounted) return; // Check if still mounted after loading
       // 2. Find the nearest stop to the predefined location
@@ -107,6 +136,51 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint("Error during initState data loading: $error");
       // Handle error appropriately, maybe show a message
     });
+  }
+  Future<void> _fetchUserRoleAndPoints(User user) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final role = doc.data()?['role'] as String?;
+
+      // Cancel previous listener before setting up new one
+      _pointsSubscription?.cancel();
+      _pointsSubscription = null;
+
+      if (mounted) { // Check mounted before setState
+        setState(() {
+          _userRole = role;
+          // Reset points before fetching/listening if role is not driver
+          if (role != 'driver') {
+            _userPoints = 0;
+          }
+        });
+      }
+
+      if (role == 'driver') {
+        // Setup points listener ONLY for drivers
+        _pointsSubscription = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .snapshots()
+            .listen((docSnap) {
+          if (mounted) { // Check mounted inside listener
+            final pts = docSnap.data()?['points'] ?? 0;
+            setState(() => _userPoints = pts as int);
+          }
+        });
+      }
+    } catch (e) {
+      print("Error fetching user role/points: $e");
+      if (mounted) {
+        setState(() {
+          _userRole = null;
+          _userPoints = 0;
+        });
+      }
+    }
   }
 
   Future<void> _loadSharedBusData() async {
@@ -173,7 +247,27 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint("Error listening to live bus positions: $error");
     });
   }
-// Add this function inside _HomeScreenState
+  Future<void> _fetchUserRole() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    final role = doc.data()?['role'] as String?;
+    setState(() => _userRole = role);
+
+    if (role == 'driver') {
+      _fetchUserPoints();
+    }
+  }
+
+  Future<void> _fetchUserPoints() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .get();
+    final pts = doc.data()?['points'] ?? 0;
+    setState(() => _userPoints = pts as int);
+  }
   Future<void> _loadRouteDefinitions() async {
     try {
       final routeSnap = await FirebaseFirestore.instance.collection('route').get();
@@ -348,16 +442,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-
-  Future<void> _fetchUserRole() async {
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(_currentUser!.uid)
-        .get();
-    setState(() {
-      _userRole = doc.data()?['role'];
-    });
-  }
   Future<void> _loadStopLocations() async {
     final snap = await FirebaseFirestore.instance.collection('busStops').get();
     for (var doc in snap.docs) {
@@ -684,6 +768,8 @@ NOW, provide the recommendation based on the data and requirements:
     // _busPositionUpdateTimer?.cancel(); // Cancel timer if used
     _liveBusPositionSubscription?.cancel(); // Cancel listener
     _mapController?.dispose();
+    _pointsSubscription?.cancel(); // Cancel points listener
+    _authSubscription?.cancel();
     super.dispose();
   }
   List<LatLng>? _calculateSegmentPath(List<LatLng>? fullPath, LatLng? start, LatLng? end) {
@@ -1094,13 +1180,7 @@ NOW, provide the recommendation based on the data and requirements:
 
                               String? parsedStartStop;
                               String? parsedEndStop;
-
-                              // Keep your RegExp definitions
-
-                            } // End of the 'else' block (where parsing is attempted)
-
-                            // **** END OF CHANGES ****
-
+                            }
                           } catch (e, stackTrace) {
                             if (!mounted) return;
                             debugPrint("Error getting live suggestion: $e\n$stackTrace");
@@ -1167,7 +1247,60 @@ NOW, provide the recommendation based on the data and requirements:
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // —————— GEMINI SUGGESTION CARD ——————
+                        if (_userRole == 'driver')
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16.0),
+                            child: Row(
+                              children: [
+                                // ——— Points button ———
+                                Expanded(
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.white,      // white background
+                                      foregroundColor: Colors.black,    // text color
+                                      side: BorderSide(color: Colors.grey.shade300),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (_) => RouteScreen()),
+                                      ).then((_) {
+                                        // whenever RouteScreen pops, reload the latest points
+                                        _fetchUserPoints();
+                                      });
+                                    },
+                                    child: Text('Points: $_userPoints'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                // ——— Redeem button ———
+                                Expanded(
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.white,
+                                      foregroundColor: Colors.black,
+                                      side: BorderSide(color: Colors.grey.shade300),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => RedeemRewardScreen(currentPoints: _userPoints),
+                                        ),
+                                      );
+                                    },
+                                    child: const Text('Redeem Reward'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (displayMessage != null && displayMessage.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 16.0),
